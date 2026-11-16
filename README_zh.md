@@ -207,6 +207,7 @@ Hermes 会把你的消息并进那轮汇报里，助手往往只顾回答你，�
 
 - **Hermes Agent** 0.22 及以上（已在 v0.22.7 上验证）。
 - 长命令转后台需要 Hermes 保持默认的 `plugins.isolation: in_process`；设为 `host` 时，命令只会照常在前台运行，`hermes super-agent status` 也用不了，因为 Hermes 在插件宿主进程里不注册插件的命令行命令。
+- 长命令转后台用到了 Hermes 的两个函数（`tools.interrupt.request_yield` 和 `consume_yield`），它们不在 Hermes 公开的插件 API 清单里。如果某个 Hermes 版本挪走了它们，命令会照常在前台运行，启动自检会告诉助手一次。
 - **Python** 3.10 及以上，零运行时依赖。
 - **CI** 在 Python 3.10 至 3.14 上运行 `ruff check` 与 `pytest`。
 

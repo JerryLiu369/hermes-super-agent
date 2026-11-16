@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from . import config, context
+from . import config, context, secretary
 
 
 def render(session_info: Optional[Any] = None) -> str:
@@ -14,7 +14,7 @@ def render(session_info: Optional[Any] = None) -> str:
     hard = int(float(config.get("turn_hard_seconds")))
     detach = int(config.get("terminal_auto_detach_seconds"))
     background = (f"- Commands longer than {detach}s move to the background and notify you when done. "
-                  "Do not sleep, poll or wait for them.\n" if detach > 0 else "")
+                  "Do not sleep, poll or wait for them.\n" if detach > 0 and secretary.detach_available() else "")
     return f"""Role: you are the user's assistant in a chat and you manage subagents. Keep the chat responsive.
 - Investigate and decide yourself. Hand slow, long or noisy work (deploys, builds, long logs, multi-step edits) to delegate_task.
 - Turn budget: at ~{soft}s you get a reminder; answer the user or delegate within 1-2 steps. At {hard}s editing and execution pause; reading, delegate_task and wrap-up tools remain.

@@ -183,3 +183,16 @@ def test_hermes_modules_unavailable_degrades_gracefully(plugin, make_ctx, monkey
     monkeypatch.setattr(builtins, "__import__", fake_import)
     issues = plugin.preflight.check_host()
     assert isinstance(issues, list)
+
+
+@requires_hermes
+def test_missing_yield_calls_reported(plugin, make_ctx, tmp_path, monkeypatch):
+    import sys
+    _write_hermes_config(tmp_path, monkeypatch, {
+        "display": {"interim_assistant_messages": True},
+        "delegation": {"max_iterations": 90},
+    })
+    monkeypatch.setitem(sys.modules, "tools.interrupt", None)
+    make_ctx()
+    first = start_turn(plugin, turn="t1")
+    assert first and "Background detach is unavailable" in first["context"]

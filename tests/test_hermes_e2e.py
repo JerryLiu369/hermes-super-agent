@@ -150,8 +150,8 @@ def test_background_detach_with_real_wait_loop(hermes):
         proc.wait()
     assert result.get("yielded_session_id") == "proc_e2e"
     assert time.monotonic() - started < 6, "yield should fire after ~1s, not wait for the process"
-    from tools.interrupt import is_thread_yield_requested
-    assert not is_thread_yield_requested(threading.get_ident())
+    from tools.interrupt import consume_yield
+    assert not consume_yield(threading.get_ident()), "no yield may stay pending for the next command"
 
 
 def test_plugin_passes_the_catalog_core_override_check(hermes):

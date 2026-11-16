@@ -2,8 +2,9 @@
 
 import os
 import re
+import sys
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 
@@ -31,7 +32,8 @@ def test_versions_and_manifest_match_code(plugin):
 def test_prompt_only_for_governed_main(plugin, make_ctx):
     ctx = make_ctx()
     render = ctx.prompt_sections["super-agent.discipline"]["renderer"]
-    text = render({"platform": "weixin"})
+    with patch.dict(sys.modules, {"tools": MagicMock(), "tools.interrupt": MagicMock()}):
+        text = render({"platform": "weixin"})
     assert "~60s" in text and "At 120s" in text and "30s" in text and "action='list'" in text
     for info in ({"platform": "cli"}, {"platform": "subagent"}, {"platform": "cron"},
                  {"platform": "weixin", "session_id": "cron_1"}, None, {}):

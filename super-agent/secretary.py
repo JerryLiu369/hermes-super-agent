@@ -230,6 +230,28 @@ def reset_all() -> None:
 
 # ---------------------------------------------------------------- background detach
 
+_yield_warned = False
+
+
+def _yield_api() -> Optional[tuple]:
+    """Hermes' own yield calls (``tools.interrupt``). They are not on Hermes' published plugin API,
+    so a refactor may move them; then detach turns off, and says so once instead of silently."""
+    global _yield_warned
+    try:
+        from tools.interrupt import consume_yield, request_yield
+    except ImportError as e:
+        if not _yield_warned:
+            _yield_warned = True
+            logger.warning("super-agent: background detach disabled; tools.interrupt.request_yield/consume_yield "
+                           "not importable: %s", e)
+        return None
+    return request_yield, consume_yield
+
+
+def detach_available() -> bool:
+    return _yield_api() is not None
+
+
 def arm_detach(args: Optional[dict]) -> Optional[Callable[[], None]]:
     """Called from the tool_execution middleware around a governed terminal call. Hermes runs that
     middleware on the thread that then waits for the command, and the wait polls that thread id
@@ -239,10 +261,10 @@ def arm_detach(args: Optional[dict]) -> Optional[Callable[[], None]]:
     detach = float(config.get("terminal_auto_detach_seconds"))
     if detach <= 0 or (args or {}).get("background"):
         return None
-    try:
-        from tools.interrupt import consume_yield, request_yield
-    except ImportError:
+    api = _yield_api()
+    if api is None:
         return None
+    request_yield, consume_yield = api
     tid = threading.get_ident()
     state = {"done": False, "fired": False}
     state_lock = threading.Lock()

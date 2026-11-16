@@ -6,7 +6,7 @@ import logging
 import threading
 from typing import Any, List, Optional
 
-from . import config, ledger
+from . import config, ledger, secretary
 
 logger = logging.getLogger("hermes.plugins.super_agent")
 
@@ -67,6 +67,17 @@ def check_host(ledger_error: Optional[str] = None) -> List[str]:
     except Exception as e:
         logger.debug("super-agent: skipping host config preflight (Hermes modules unavailable: %s)", e)
         return issues
+
+    # 4. Background detach relies on tools.interrupt, which is not on Hermes' published plugin API.
+    try:
+        if float(config.get("terminal_auto_detach_seconds")) > 0 and not secretary.detach_available():
+            issues.append(
+                "Background detach is unavailable: this Hermes version has no tools.interrupt.request_yield/"
+                "consume_yield, so long terminal commands stay in the foreground and block the turn. "
+                "Delegate slow commands or run them with background=true."
+            )
+    except Exception as e:
+        logger.debug("super-agent: detach availability check failed: %s", e)
 
     try:
         from hermes_cli.config_defaults import DEFAULT_CONFIG

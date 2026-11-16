@@ -99,3 +99,16 @@ def test_detach_disabled_by_setting(plugin, make_ctx, interrupt):
     start_turn(plugin)
     _run(ctx)
     assert _Timer.made == []
+
+
+def test_detach_off_and_logged_once_when_hermes_moves_the_yield_calls(plugin, make_ctx, caplog):
+    ctx = make_ctx()
+    start_turn(plugin)
+    _Timer.made = []
+    with patch.dict(sys.modules, {"tools.interrupt": None}), patch("threading.Timer", _Timer):
+        assert _run(ctx) == '{"output": "done"}'
+        _run(ctx)
+        assert plugin.secretary.detach_available() is False
+        assert "move to the background" not in plugin.prompt.render({"platform": "weixin"})
+    assert _Timer.made == []
+    assert sum("background detach disabled" in r.message for r in caplog.records) <= 1
