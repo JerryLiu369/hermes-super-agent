@@ -23,18 +23,20 @@ hermes plugins install JerryLiu369/hermes-super-agent/super-agent
 hermes plugins enable super-agent
 ```
 
-建议在 `~/.hermes/config.yaml` 中顺手加上下面两项可选配置，改完后重启网关：
+建议在 `~/.hermes/config.yaml` 中顺手加上下面三项可选配置，改完后重启网关：
 
 ```yaml
 delegation:
   max_iterations: 90                # 需要更多步数的子代理，多半已经卡住了
+compression:
+  in_place: true                    # Hermes 默认值：压缩时对话保留原来的会话 id
 plugins:
   entries:
     super-agent:
       allow_gateway_injection: true # 允许插件唤醒助手，把被你新消息打断的汇报补上
 ```
 
-不开 `allow_gateway_injection` 也不影响日常使用，被你打断的汇报会等你发下一条消息时再一并补上。如果安装时用了别的插件名，请把配置里的 `super-agent` 换成 `hermes plugins list` 显示的实际名称。
+不开 `allow_gateway_injection` 也不影响日常使用，被你打断的汇报会等你发下一条消息时再一并补上。`compression.in_place: true` 本来就是 Hermes 的默认值，只要确认没被改成 `false` 就行：改成 `false` 后，每次压缩都会让对话换一个新的会话 id，插件会忘掉压缩前对这个对话知道的东西（见常见问题）。这项没开时，启动自检会告诉助手一次。如果安装时用了别的插件名，请把配置里的 `super-agent` 换成 `hermes plugins list` 显示的实际名称。
 
 ### 从 `proactive-agent` 升级
 
@@ -203,6 +205,14 @@ Hermes 派子代理时不带聊天记录，也不给它加载用户和记忆文�
 
 **我在后台子代理刚跑完的时候发消息，会发生什么？**
 Hermes 会把你的消息并进那轮汇报里，助手往往只顾回答你，把刚跑完的结果忘在一边。插件会一直把结果标成 `unreported`，直到展示过它的那一轮以一次没被你打断的回复结束：助手若又调了工具，工具返回时会提醒它一并汇报；若它没调工具就直接回复了，插件会通过 Hermes 的消息注入再唤醒它一次（需要开启 `allow_gateway_injection: true`），补一句简短说明或回 `[SILENT]`；两种情况都不成立时，提醒会挂在你下一条消息上。
+
+**Hermes 压缩长对话之后会怎样？**
+默认（`compression.in_place: true`）下，Hermes 在原来的会话 id 上压缩，插件这边什么都不变，建议保持默认。设成 `compression.in_place: false` 时，每次压缩都会把对话搬到一个新的会话 id 上，而 Hermes 不会告诉插件新 id 接的是哪个对话，所以插件把它当成一个新对话。正在进行的那一轮不受影响：计时、你在这一轮里发的消息和汇报跟踪都会跟过去；压缩之后才结束的子代理也会回报到新 id 上，因为 Hermes 在子代理结束时给出的是对话当前的会话 id。除此之外，插件在压缩前对这个对话知道的东西都会放下，助手手里仍有 Hermes 的摘要和聊天本身：
+- 背景材料里只引用压缩后还留着的那些你的消息。
+- “本对话正在运行的子代理”那句提醒、两个子代理改同一文件的检查，以及背景材料里的未完成任务，都看不到压缩前派出的任务。正在跑的子代理仍可以用 `delegate_task(action='list')` 查到，所有任务也仍会出现在 `hermes super-agent status` 里。
+- 压缩前结束的子代理不再计入“连续 2 个没完成就退回派活”的次数。
+- 压缩前子代理提出的问题，不会在你下一条消息时再提醒一次。
+- 在发生压缩的那一轮里、压缩之前结束的结果，不会附上“核对证据”的说明；还没告诉你的结果，过了那一轮也不会再重复。结果本身仍由 Hermes 送达。
 
 ## 兼容性
 

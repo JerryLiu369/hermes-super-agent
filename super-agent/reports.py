@@ -211,10 +211,16 @@ def on_subagent_stop(**kw: Any) -> None:
     background = bool((ledger.get(w["id"]) or {}).get("background"))
     question = str(report.get("question") or "").strip() if final == DECISION else ""
     options = _options(report.get("options")) if question else []
+    chat = w["parent_session"]
+    live = str(kw.get("parent_session_id") or "")
+    if w.get("direct") and live and live != chat:
+        # Hermes reads the parent's session id when the subagent ends: a compaction since dispatch moved
+        # the chat to this id, and a note left under the old one would never be read.
+        chat = live
     ledger.finish(w["id"], final, summary, evidence, blockers, files,
-                  unreported=background and final != ledger.STOPPED, question=question, options=options)
-    ledger.add_note(w["parent_session"],
-                    _finished_note(w, final, evidence, kw.get("duration_ms"), question, options, summary))
+                  unreported=background and final != ledger.STOPPED, question=question, options=options,
+                  parent=chat)
+    ledger.add_note(chat, _finished_note(w, final, evidence, kw.get("duration_ms"), question, options, summary))
 
 
 def _lost_note(task: dict) -> str:
@@ -295,6 +301,12 @@ def _answered(session_id: str, turn: str) -> int:
     return count if seen_turn == turn else 0
 
 
+def _in_turn(session_id: str, turn: dict) -> List[dict]:
+    """Unreported results this turn showed, under every session id the turn ran under (a compaction may
+    have moved it to a new one)."""
+    return [t for s in (turn.get("sessions") or [session_id]) for t in ledger.unreported_in_turn(s, turn["key"])]
+
+
 def tool_result_note(session_id: str, turn: Optional[dict], result: Any) -> Optional[str]:
     """After the user wrote into a turn that is reporting results, say so on the next tool result."""
     if not turn:
@@ -303,7 +315,7 @@ def tool_result_note(session_id: str, turn: Optional[dict], result: Any) -> Opti
         if turn["interjections"] <= _answered(session_id, turn["key"]):
             return None
         _reminded[session_id] = (turn["key"], turn["interjections"])
-    tasks = ledger.unreported_in_turn(session_id, turn["key"])
+    tasks = _in_turn(session_id, turn)
     return util.append_note(result, _unreported_note(tasks)) if tasks else None
 
 
@@ -327,7 +339,7 @@ def on_turn_end(session_id: str, turn: Optional[dict], completed: bool) -> None:
     with _lock:
         answered = _answered(session_id, turn["key"])
         _reminded.pop(session_id, None)
-    tasks = ledger.unreported_in_turn(session_id, turn["key"])
+    tasks = _in_turn(session_id, turn)
     if not tasks or not completed:
         # An interrupted or failed turn: the user's next message (Hermes runs it next) repeats them.
         return
@@ -338,6 +350,13 @@ def on_turn_end(session_id: str, turn: Optional[dict], completed: bool) -> None:
     if due and _wake(turn.get("session_key") or ""):
         ledger.add_wake(due)
         logger.info("super-agent: woke %s to report %d result(s) the user has not heard", session_id, len(due))
+
+
+def move(old: str, new: str) -> None:
+    """A compaction moved the running turn to a new session id: its state goes with it."""
+    with _lock:
+        if old in _reminded:
+            _reminded[new] = _reminded.pop(old)
 
 
 def forget(session_id: str) -> None:

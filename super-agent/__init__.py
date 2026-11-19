@@ -45,9 +45,25 @@ def _worker_for(**kw: Any) -> Optional[dict]:
     return workers.lookup(task_id=str(kw.get("task_id") or ""), session_id=str(kw.get("session_id") or ""))
 
 
+def _follow_compaction(session_id: str, turn_id: str) -> bool:
+    """Hermes' rotating compaction gives the chat a new session id in the middle of a turn, with no hook
+    to say so; the turn id stays. The turn's state moves to the new id and the old id's is dropped. What
+    the plugin knew about the chat outside this turn stays with the old id (see the README)."""
+    old = secretary.follow(session_id, turn_id)
+    if not old:
+        return False
+    handoff.move(old, session_id)
+    reports.move(old, session_id)
+    context.move_session(old, session_id)
+    logger.info("super-agent: compaction moved turn %s from session %s to %s", turn_id, old, session_id)
+    return True
+
+
 def _main_session(**kw: Any) -> Optional[str]:
     session_id = str(kw.get("session_id") or "")
-    if session_id and context.is_governed_main(**kw):
+    if not session_id or context.is_child(**kw) or context.is_cron(**kw):
+        return None
+    if _follow_compaction(session_id, str(kw.get("turn_id") or "")) or context.is_governed_main(**kw):
         return session_id
     return None
 

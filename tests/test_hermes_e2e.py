@@ -265,6 +265,7 @@ def test_startup_preflight_warns_once_and_stays_silent_when_healthy(tmp_path, mo
         "plugins": {"enabled": ["super-agent"]},
         "display": {"platforms": {"weixin": {"interim_assistant_messages": False}}},
         "delegation": {"max_iterations": 200},
+        "compression": {"in_place": False},
     }), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     plugins_mod.discover_plugins(force=True)
@@ -273,6 +274,7 @@ def test_startup_preflight_warns_once_and_stays_silent_when_healthy(tmp_path, mo
     text1 = "\n".join(str(r.get("context", "")) for r in r1 if isinstance(r, dict))
     assert "weixin" in text1 and "inline" in text1
     assert "delegation.max_iterations is 200" in text1
+    assert "compression.in_place is false" in text1
 
     r2 = _start_turn("t2")
     text2 = "\n".join(str(r.get("context", "")) for r in r2 if isinstance(r, dict))
@@ -338,3 +340,60 @@ def test_real_write_file_reports_the_absolute_path(hermes, tmp_path):
     target.parent.mkdir()
     out = write_file_tool(str(target), "name = 'app'\n", task_id="e2e-write")
     assert _plugin_module(hermes, "workers").written_paths({"path": str(target)}, out) == [str(target)], out
+
+
+def test_a_rotating_compaction_keeps_the_turn_and_the_result_follows_the_chat(hermes, tmp_path, monkeypatch):
+    """Hermes' compaction keeps the session id by default (compression.in_place: true). With in_place false
+    it publishes a new session, re-points the agent at it mid-turn (agent.session_id, HERMES_SESSION_ID) and
+    tells no hook. Observed here: later hooks of the turn carry the new id with the same turn id, and
+    subagent_stop reads the parent's id when the subagent ends, so it names the new one."""
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from hermes_cli.config import DEFAULT_CONFIG
+    from persistence_assembly import open_persistence, profile_scope
+    from run_agent import AIAgent
+    from tools.delegate_tool_results import _fire_subagent_stop_hooks
+
+    assert DEFAULT_CONFIG["compression"]["in_place"] is True
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    db = open_persistence(profile_scope(home=Path(os.environ["HERMES_HOME"])))
+    try:
+        agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
+                        quiet_mode=True, persistence=db, session_id=SESSION, skip_context_files=True,
+                        skip_memory=True, platform="weixin")
+        agent.compression_in_place = False
+        compressor = MagicMock()
+        compressor.compress.return_value = [{"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                                            {"role": "user", "content": "帮我修一下 522"}]
+        compressor.compression_count, compressor.last_prompt_tokens, compressor.last_completion_tokens = 1, 0, 0
+        compressor._last_summary_error, compressor._last_compress_aborted = None, False
+        agent.context_compressor = compressor
+
+        _start_turn()
+        plugins_mod.invoke_hook("subagent_start", parent_session_id=SESSION, parent_turn_id="t1",
+                                parent_subagent_id=None, child_session_id="child-z", child_subagent_id="sa-0-z",
+                                child_role="leaf", child_goal="重新部署")
+        secretary = _plugin_module(hermes, "secretary")
+        secretary._turns[SESSION]["start"] -= 200
+
+        agent._compress_context([{"role": "user", "content": f"m{i}"} for i in range(10)], "sys",
+                                approx_tokens=10_000)
+        new_id = agent.session_id
+        assert new_id != SESSION
+        from gateway.session_context import get_session_env
+        assert get_session_env("HERMES_SESSION_ID", "") == new_id
+
+        block, _ = _pre_tool("terminal", {"command": "ls"}, session_id=new_id)
+        assert block and "more than 120s" in block, "the turn kept its clock under the new id"
+        assert SESSION not in secretary._turns
+
+        child = MagicMock(session_id="child-z")
+        summary = json.dumps({"status": "completed", "summary": "已重新部署", "evidence": ["HTTP/2 200"]})
+        _fire_subagent_stop_hooks([{"task_index": 0, "summary": summary, "status": "completed",
+                                    "duration_seconds": 3}], {0: child}, agent)
+        ledger = _plugin_module(hermes, "ledger")
+        assert ledger.get("sa-0-z")["parent"] == new_id
+        assert any("HTTP/2 200" in n for n in ledger.pop_notes(new_id))
+    finally:
+        db.close()

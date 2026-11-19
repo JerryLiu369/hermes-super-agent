@@ -476,3 +476,66 @@ def test_prose_that_gives_needs_decision_as_its_status_is_a_question(plugin, mak
     spawn_worker(plugin)
     _stop(plugin, "**Status:** needs_decision\nShould the route move to the new zone or stay on the proxy?")
     assert plugin.ledger.get("sa-0-abc")["status"] == "needs_decision"
+
+
+def test_a_report_settles_when_a_compaction_moves_the_turn_to_a_new_session(plugin, make_ctx, monkeypatch):
+    """Results shown at the start of a turn on s1 are still settled, or chased, once a rotating compaction
+    moved the turn to s2."""
+    monkeypatch.setenv("HERMES_SESSION_KEY", SESSION_KEY)
+    calls, inject = _injector()
+    make_ctx(inject_message=inject)
+    _two_results(plugin)
+    start_turn(plugin, turn="t2", user=WAKE_TURN)
+    plugin._pre_api_request(session_id="s2", turn_id="t2", platform="weixin",
+                            conversation_history=[_redirect_row("is the README done?")], request_messages=[])
+    out = plugin._transform_tool_result("read_file", {}, '{"content": "x"}', session_id="s2", turn_id="t2",
+                                        task_id="main")
+    assert "has not heard" in json.loads(out)["super_agent_note"]
+    assert plugin._transform_tool_result("read_file", {}, '{"content": "x"}', session_id="s2", turn_id="t2",
+                                         task_id="main") is None, "said once, also after the move"
+    end_turn(plugin, session="s2", turn="t2")
+    assert calls == [] and not plugin.ledger.get("sa-0-a")["unreported"]
+    assert plugin.reports._reminded == {}
+
+
+def test_an_uninterrupted_report_settles_after_the_move(plugin, make_ctx, monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_KEY", SESSION_KEY)
+    calls, inject = _injector()
+    make_ctx(inject_message=inject)
+    _two_results(plugin)
+    start_turn(plugin, turn="t2", user=WAKE_TURN)
+    _user_cuts_into_the_report(plugin, [])
+    main_tool(plugin, "read_file", {}, session="s2", turn="t2")
+    end_turn(plugin, session="s2", turn="t2")
+    assert len(calls) == 1 and calls[0]["session_key"] == SESSION_KEY, "the wake still finds the chat"
+
+
+def test_a_result_follows_the_chat_to_its_new_session(plugin, make_ctx):
+    """Hermes reads the parent's session id when a subagent ends, so a background result that ends after a
+    rotating compaction names the chat's new id."""
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _dispatched(plugin, ["sa-0-abc"])
+    end_turn(plugin)
+    plugin._subagent_stop(parent_session_id="s2", child_session_id="child-1", child_status="completed",
+                          child_summary=json.dumps({"status": "completed", "summary": "redeployed",
+                                                    "evidence": ["HTTP/2 200"]}),
+                          tool_call_history=[], duration_ms=60000)
+    assert plugin.ledger.get("sa-0-abc")["parent"] == "s2"
+    note = start_turn(plugin, session="s2", turn="t2")["context"]
+    assert "Subagent finished" in note and "HTTP/2 200" in note
+    end_turn(plugin, session="s2", turn="t2")
+    assert not plugin.ledger.get("sa-0-abc")["unreported"]
+
+
+def test_a_nested_result_stays_with_the_chat_that_started_the_chain(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    plugin._subagent_start(parent_session_id="child-1", parent_subagent_id="sa-0-abc", child_session_id="grand",
+                           child_subagent_id="sa-1-g", child_goal="Check DNS")
+    plugin._subagent_stop(parent_session_id="child-1", child_session_id="grand", child_status="completed",
+                          child_summary=json.dumps({"status": "completed", "summary": "ok", "evidence": ["dig"]}),
+                          tool_call_history=[], duration_ms=1000)
+    assert plugin.ledger.get("sa-1-g")["parent"] == "s1"

@@ -23,18 +23,20 @@ hermes plugins install JerryLiu369/hermes-super-agent/super-agent
 hermes plugins enable super-agent
 ```
 
-Two optional settings in `~/.hermes/config.yaml` work well alongside the plugin. Restart the gateway after changing them:
+Three optional settings in `~/.hermes/config.yaml` work well alongside the plugin. Restart the gateway after changing them:
 
 ```yaml
 delegation:
   max_iterations: 90                # a subagent that needs more steps is usually stuck
+compression:
+  in_place: true                    # Hermes' default: a compaction keeps the chat's session id
 plugins:
   entries:
     super-agent:
       allow_gateway_injection: true # lets the plugin wake the main agent to finish a report you interrupted
 ```
 
-Without `allow_gateway_injection`, an interrupted report simply waits for your next message. If you installed the plugin under a different name, replace `super-agent` with the id shown by `hermes plugins list`.
+Without `allow_gateway_injection`, an interrupted report simply waits for your next message. `compression.in_place: true` is already Hermes' default, so only check that it has not been set to `false`: then every compaction gives the chat a new session id and the plugin forgets what it knew about the chat before (see the FAQ). The startup check tells the main agent once when it is off. If you installed the plugin under a different name, replace `super-agent` with the id shown by `hermes plugins list`.
 
 ### Upgrading from `proactive-agent`
 
@@ -203,6 +205,14 @@ Run `hermes super-agent status`. It lists the latest tasks from the ledger (runn
 
 **What happens if I write something just as a background subagent finishes?**
 Hermes folds your message into the turn that is reporting the result, and the main agent tends to answer only you. The plugin keeps the result marked `unreported` until a turn that showed it ends with a reply you did not interrupt: the next tool result carries a reminder, or the plugin wakes the main agent once through Hermes' message injection (which needs `allow_gateway_injection: true`) for a short follow-up or `[SILENT]`, and failing both, your next message carries the reminder.
+
+**What happens when Hermes compacts a long chat?**
+By default (`compression.in_place: true`) Hermes compacts the chat under the same session id, and nothing changes for the plugin; keep it that way. With `compression.in_place: false`, every compaction moves the chat to a new session id, and Hermes tells plugins nothing about which chat the new id continues, so the plugin treats it as a new chat. The turn that was running keeps its clock, the messages you sent into it and its report tracking, and a subagent that ends after the compaction reports to the new id, because Hermes names the chat's current session when a subagent ends. Everything else the plugin knew about the chat before the compaction is let go; the main agent still has Hermes' summary and the chat itself:
+- The briefing quotes only your messages that are left after the compaction.
+- The "subagents running in this chat" line, the check for two subagents changing the same file and the briefing's unfinished tasks no longer see tasks dispatched before it. `delegate_task(action='list')` still shows running subagents, and `hermes super-agent status` still shows every task.
+- Subagents that ended before it no longer count toward the 2 failed tasks that send a dispatch back.
+- A question a subagent asked before it is not brought up again on your next message.
+- A result that ended in the turn that compacted, before the compaction, gets no "check the evidence" note, and a result the user has not heard yet is no longer repeated after that turn. Hermes still delivers the result itself.
 
 ## Compatibility
 

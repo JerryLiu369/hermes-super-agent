@@ -39,10 +39,10 @@ _user_words: Dict[str, List[str]] = {}
 _local_turns = itertools.count(1)
 
 
-def _new_turn(turn_id: str, seen: int = 0, session_key: str = "") -> dict:
+def _new_turn(session_id: str, turn_id: str, seen: int = 0, session_key: str = "") -> dict:
     return {"turn_id": turn_id, "key": turn_id or f"local-{next(_local_turns)}", "start": time.monotonic(),
             "seen": seen, "interjections": 0, "noted": "green", "session_key": session_key,
-            "compressing": 0, "waiting": set(), "paused_since": 0.0}
+            "compressing": 0, "waiting": set(), "paused_since": 0.0, "sessions": [session_id]}
 
 
 def _turn(session_id: str, turn_id: str = "") -> dict:
@@ -50,9 +50,38 @@ def _turn(session_id: str, turn_id: str = "") -> dict:
     # another turn id, and must not reset the live turn.
     st = _turns.get(session_id)
     if st is None:
-        st = _new_turn(turn_id)
+        st = _new_turn(session_id, turn_id)
         _turns[session_id] = st
     return st
+
+
+def _find(session_id: str) -> Optional[dict]:
+    """The turn running under *session_id*, or the one that ran under it before a compaction moved it
+    to a new id (auxiliary calls keep the id the turn started with)."""
+    st = _turns.get(session_id)
+    if st is None:
+        st = next((t for t in _turns.values() if session_id in t["sessions"]), None)
+    return st
+
+
+def follow(session_id: str, turn_id: str) -> str:
+    """Move the running turn to *session_id* when a compaction gave the chat a new id in the middle of
+    the turn. Hermes' rotating compaction (``compression.in_place: false``) re-points the agent at a new
+    session and no hook says so, but the turn id survives it. Returns the id the turn ran under, or ""."""
+    if not session_id or not turn_id:
+        return ""
+    with _lock:
+        if session_id in _turns:
+            return ""
+        for old, st in _turns.items():
+            if st["turn_id"] == turn_id and session_id not in st["sessions"]:
+                del _turns[old]
+                st["sessions"].append(session_id)
+                _turns[session_id] = st
+                if old in _user_words:
+                    _user_words[session_id] = _user_words.pop(old)
+                return old
+    return ""
 
 
 def _interjections(messages: Any) -> List[str]:
@@ -133,12 +162,14 @@ def zone(session_id: str) -> str:
 
 def turn_facts(session_id: str, turn_id: str = "") -> Optional[dict]:
     """The running turn: ``key`` (Hermes' turn id, or a local one), ``interjections`` (user messages
-    delivered into it so far) and the gateway ``session_key``. None for another turn's call."""
+    delivered into it so far), the gateway ``session_key`` and the ``sessions`` it ran under (more than
+    one after a compaction moved it). None for another turn's call."""
     with _lock:
         st = _turns.get(session_id)
         if st is None or (turn_id and st["turn_id"] and st["turn_id"] != turn_id):
             return None
-        return {"key": st["key"], "interjections": st["interjections"], "session_key": st["session_key"]}
+        return {"key": st["key"], "interjections": st["interjections"], "session_key": st["session_key"],
+                "sessions": list(st["sessions"])}
 
 
 def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, user_message: Any) -> None:
@@ -149,7 +180,7 @@ def on_turn_start(session_id: str, turn_id: str, platform: str, messages: Any, u
         if not words or words[-1] != user_message:
             words.append(user_message)
     with _lock:
-        _turns[session_id] = _new_turn(turn_id, len(_interjections(messages)),
+        _turns[session_id] = _new_turn(session_id, turn_id, len(_interjections(messages)),
                                        context.session_env("HERMES_SESSION_KEY"))
         _user_words[session_id] = words[-_KEEP_USER_MESSAGES:]
 
@@ -180,7 +211,7 @@ def on_compression(session_id: str, turn_id: str, started: bool) -> None:
     def change(st: dict) -> None:
         st["compressing"] = st["compressing"] + 1 if started else max(0, st["compressing"] - 1)
     with _lock:
-        st = _turns.get(session_id)
+        st = _find(session_id)
         if st is None or not turn_id or st["turn_id"] != turn_id:
             return
         _pause(st, change)
@@ -196,7 +227,7 @@ def on_human_wait(session_id: str, request_id: str, started: bool) -> None:
         else:
             st["waiting"].discard(request_id)
     with _lock:
-        st = _turns.get(session_id)
+        st = _find(session_id)
         if st is None:
             return
         _pause(st, change)

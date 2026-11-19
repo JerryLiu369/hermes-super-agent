@@ -69,7 +69,7 @@ def check_host(ledger_error: Optional[str] = None) -> List[str]:
             "Set plugins.isolation: in_process for all of it."
         )
 
-    # 2 & 3. Host config checks using Hermes' own resolvers (degrade safely if Hermes is not importable).
+    # 2, 3 & 5. Host config checks using Hermes' own resolvers (degrade safely if Hermes is not importable).
     try:
         from gateway.display_config import resolve_display_setting
         from hermes_cli.config_effective import load_user_config_effective
@@ -143,7 +143,25 @@ def check_host(ledger_error: Optional[str] = None) -> List[str]:
                 f"it to ~{_RECOMMENDED_MAX_ITERATIONS} in ~/.hermes/config.yaml to bound worker subagent steps."
             )
 
+    # 5. A rotating compaction gives the chat a new session id that no hook links to the old one.
+    compression_cfg = user_config.get("compression") if isinstance(user_config, dict) else None
+    in_place = compression_cfg.get("in_place") if isinstance(compression_cfg, dict) else None
+    if in_place is not None and not _truthy(in_place):
+        issues.append(
+            "compression.in_place is false, so every context compaction moves the chat to a new session id. The "
+            "plugin then loses track of what happened in the chat before it: running and unfinished subagent tasks, "
+            "open questions and result notes still waiting. Set compression.in_place: true (Hermes' default) in "
+            "~/.hermes/config.yaml."
+        )
+
     return issues
+
+
+def _truthy(value: Any) -> bool:
+    # How Hermes reads compression.in_place (agent/agent_init.py, utils.env.is_truthy_value).
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
 
 
 def _format_notice(issues: List[str]) -> Optional[str]:

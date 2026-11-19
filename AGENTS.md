@@ -43,6 +43,10 @@ These are decisions the maintainer made. Do not change them without being asked.
 - **Never in the way.** Every hook is wrapped in `_guarded`: a plugin error is logged and the call proceeds.
 - **Only where asked.** Only platforms in `governed_platforms` (default `["weixin"]`) and the subagents they spawn are
   governed. Cron runs and other platforms are untouched.
+- **A rotating compaction is a new chat.** When a compaction gives the chat a new session id (below), the plugin
+  does not try to link the old and new ids: there is no public API for it. Only the running turn follows, by its
+  turn id, and a subagent that ends later reports to the id `subagent_stop` names. Everything else the plugin knew
+  about the chat is let go, and the README lists what that loses.
 - **Verify, do not assume.** Hermes changes quickly. Every hook argument, tool name, status value and module path the
   code relies on must be checked against the Hermes source, not taken from memory, older code or docs. When you check
   a new fact, add it to the list below.
@@ -153,6 +157,23 @@ the `hermes-agent` checkout.
   behind it. Async results arrive as a user row starting `[ASYNC DELEGATION BATCH COMPLETE — <id>]` or
   `[ASYNC DELEGATION TASK FAILED` (`tools/process_registry_notifications.py`); `display_kind:
   "internal_notification"` is stored in the database only.
+
+**Compaction** (checked at `v0.23.2+canary.20261118`)
+
+- `compression.in_place` defaults to `true` (`hermes_cli/config_defaults.py`; read with `utils.env.is_truthy_value`,
+  unset is `true`, in `agent/agent_init.py`): the chat is compacted under the same session id. `preflight` reports
+  `false` once. With `false`, `agent/conversation_compression.py::_publish_rotated_compaction` mints a new id, sets
+  `agent.session_id` to it and rebinds `HERMES_SESSION_ID` (`_rebind_session_context`), in the middle of a turn or
+  before one (gateway hygiene, `/compress`). No plugin hook names the old id: Hermes carries only its own state
+  (`_carry_session_state_to_child`) and follows the chain itself (`get_compression_tip`). Only context engines get
+  `on_session_start(..., old_session_id=...)`. `HERMES_SESSION_KEY` does not change.
+- After a mid-turn rotation, the turn's tool hooks, `pre_api_request` and `on_session_end` carry the new id with the
+  same `turn_id`. `pre_auxiliary_call` / `post_auxiliary_call` keep the id the turn started with: they read it from
+  the relay lease taken at turn start (`agent/turn_facade.py`, `agent/auxiliary_hooks.py`).
+- `subagent_stop` reads `parent_session_id` from the parent agent when the subagent ends
+  (`tools/delegate_tool_results.py::_fire_subagent_stop_hooks`), and the gateway reuses one agent per route key
+  (`gateway/session_execution.py`), so a background subagent that ends after a rotation names the new id.
+  `tests/test_hermes_e2e.py` reproduces a rotation and checks both.
 
 **Other extension points**
 

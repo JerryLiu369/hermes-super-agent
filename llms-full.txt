@@ -30,6 +30,7 @@ Every question below is answered in full in the "Mechanism detail" and "FAQ" sec
 14. How is this different from simply lowering `delegation.max_iterations`?
 15. How do you stop the main agent from re-dispatching a failing plan again and again?
 16. How do you see which subagent tasks ran and how they ended?
+17. What happens when Hermes compacts a chat into a new session?
 
 ## What it is
 
@@ -55,11 +56,14 @@ The plugin id is `super-agent`. The install path `JerryLiu369/hermes-super-agent
 Recommended host settings in `~/.hermes/config.yaml`:
 
 - `delegation.max_iterations: 90` caps total subagent iterations so a wandering subagent reports back sooner.
+- `compression.in_place: true` is Hermes' default and should stay: with `false`, every compaction gives the chat a new session id and the plugin lets go of what it knew about the chat before (see "Rotating compaction" under limits). The startup host check reports `false` once.
 - `plugins.entries.super-agent.allow_gateway_injection: true` grants Hermes' permission for `ctx.inject_message`, allowing the plugin to wake the main agent when a user message interrupts a background result report (without it, the reminder simply rides on the user's next message). Use the plugin id shown by `hermes plugins list` if installed under another name:
 
 ```yaml
 delegation:
   max_iterations: 90
+compression:
+  in_place: true
 plugins:
   entries:
     super-agent:
@@ -230,6 +234,7 @@ plugins:
 - **No subagent resume in Hermes:** Hermes cannot resume a finished subagent session. Continuity is provided by briefing the next subagent in the same chat with the unfinished task's ledger record.
 - **Step budget ownership:** Total subagent iteration limits remain controlled by Hermes' `delegation.max_iterations`.
 - **Data it reads:** its own config keys, Hermes session flags (platform, cron), the turn's conversation history passed to its hooks, and `<hermes home>/memories/USER.md` and `MEMORY.md`, which are copied in full into every governed subagent brief. It makes no network calls.
+- **Rotating compaction:** Hermes compacts under the same session id by default (`compression.in_place: true`). With `in_place: false`, `agent/conversation_compression.py::_publish_rotated_compaction` mints a new session id mid-turn, re-points the agent and `HERMES_SESSION_ID` at it, and fires no plugin hook that links the two ids. The plugin treats the new id as a new chat, and the startup host check tells the main agent once when `in_place` is `false`. The running turn follows by its `turn_id`, which survives the rotation: the first hook with the new id and the same turn id moves the turn's clock, interjection count, gateway route key, quoted user messages and once-per-turn returns to the new id and drops the old id's in-memory entries; auxiliary calls, which keep the id the turn started with, still reach it; and the results it showed are settled or chased under both ids. `subagent_stop` reads the parent's session id when the subagent ends, so a direct subagent that ends after the compaction is filed and noted under the new id. Accepted losses: tasks dispatched before the compaction are missing from the running-subagents line, the file clash check, the unfinished-task briefing and the failed-task count; open questions from before are not reminded; a result that ended in the compacting turn before the compaction gets no verification note, and an unreported result from before is not repeated after that turn (Hermes still delivers it). Ids left behind by a compaction before a turn starts get no reset hook; their last-user-message time expires after 24 hours and the platform cache keeps the newest 512 sessions.
 - **Process-local vs durable state:** Active turn timers and running-worker repeat counters live in memory per gateway process; task records, queued notes, open questions, and unreported-result flags persist in SQLite across restarts.
 
 ## FAQ
@@ -269,6 +274,9 @@ Once 2 subagents of a chat have ended without finishing since the user's last me
 
 **How do I see which subagent tasks ran and how they ended?**
 Run `hermes super-agent status` (add `--json` for JSON, `--limit N` for more tasks). It reads the ledger and prints the latest tasks, running ones first, with status, age, chat, changed files, whether the result reached the user, and any open question, plus the effective settings and the startup host check.
+
+**What happens when Hermes compacts a chat into a new session?**
+Nothing, with Hermes' default `compression.in_place: true`, which is the recommended setting. With `false`, each compaction moves the chat to a new session id that no hook links to the old one, so the plugin treats it as a new chat. The running turn keeps its clock, mid-turn messages and report tracking, and a subagent that ends afterwards reports to the new id. What the plugin knew about the chat before (running and unfinished tasks, the failed-task count, open questions, a result note queued in the compacting turn) is let go; the main agent still has Hermes' summary, and `hermes super-agent status` still lists every task.
 
 **What if two subagents try to edit the same file?**
 A `delegate_task` call whose `goal` or `context` names a file another running subagent is already modifying is returned once per turn so the main agent can wait, steer the active worker, or stop it.
