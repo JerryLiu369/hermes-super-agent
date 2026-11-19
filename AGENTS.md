@@ -160,8 +160,9 @@ the `hermes-agent` checkout.
 
 **Compaction** (checked at `v0.23.2+canary.20261118`)
 
-- `compression.in_place` defaults to `true` (`hermes_cli/config_defaults.py`): the chat is compacted under the same
-  session id. With `false`, `agent/conversation_compression.py::_publish_rotated_compaction` mints a new id, sets
+- `compression.in_place` defaults to `true` (`hermes_cli/config_defaults.py`; read with `utils.env.is_truthy_value`,
+  unset is `true`, in `agent/agent_init.py`): the chat is compacted under the same session id. `preflight` reports
+  `false` once. With `false`, `agent/conversation_compression.py::_publish_rotated_compaction` mints a new id, sets
   `agent.session_id` to it and rebinds `HERMES_SESSION_ID` (`_rebind_session_context`), in the middle of a turn or
   before one (gateway hygiene, `/compress`). No plugin hook names the old id: Hermes carries only its own state
   (`_carry_session_state_to_child`) and follows the chain itself (`get_compression_tip`). Only context engines get

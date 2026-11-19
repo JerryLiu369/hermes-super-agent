@@ -265,6 +265,7 @@ def test_startup_preflight_warns_once_and_stays_silent_when_healthy(tmp_path, mo
         "plugins": {"enabled": ["super-agent"]},
         "display": {"platforms": {"weixin": {"interim_assistant_messages": False}}},
         "delegation": {"max_iterations": 200},
+        "compression": {"in_place": False},
     }), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     plugins_mod.discover_plugins(force=True)
@@ -273,6 +274,7 @@ def test_startup_preflight_warns_once_and_stays_silent_when_healthy(tmp_path, mo
     text1 = "\n".join(str(r.get("context", "")) for r in r1 if isinstance(r, dict))
     assert "weixin" in text1 and "inline" in text1
     assert "delegation.max_iterations is 200" in text1
+    assert "compression.in_place is false" in text1
 
     r2 = _start_turn("t2")
     text2 = "\n".join(str(r.get("context", "")) for r in r2 if isinstance(r, dict))

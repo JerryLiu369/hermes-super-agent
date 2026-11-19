@@ -195,3 +195,15 @@ def test_missing_yield_calls_reported(plugin, make_ctx, tmp_path, monkeypatch):
     make_ctx()
     first = start_turn(plugin, turn="t1")
     assert first and "Background detach is unavailable" in first["context"]
+
+
+@requires_hermes
+@pytest.mark.parametrize("value, warned", [(False, True), ("no", True), (True, False), ("true", False), (None, False)])
+def test_rotating_compaction_is_reported(plugin, make_ctx, tmp_path, monkeypatch, value, warned):
+    data = {"display": {"interim_assistant_messages": True}, "delegation": {"max_iterations": 90}}
+    if value is not None:
+        data["compression"] = {"in_place": value}
+    _write_hermes_config(tmp_path, monkeypatch, data)
+    make_ctx()
+    first = start_turn(plugin, turn="t1")
+    assert bool(first and "compression.in_place is false" in first["context"]) is warned
