@@ -211,6 +211,21 @@ def test_a_compression_that_never_ends_stops_pausing_the_clock(plugin, make_ctx)
     assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block"
 
 
+def test_a_wait_for_the_user_overlapping_a_compression_is_not_capped(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    _passes(plugin, 50)
+    _human(plugin, "_on_human_input_request")
+    _passes(plugin, 1200)  # the user takes 20 minutes; a compression starts near the end
+    _aux(plugin, "_pre_auxiliary_call")
+    _passes(plugin, 5)
+    _human(plugin, "_on_human_input_resolved", outcome="once")
+    _passes(plugin, 5)
+    assert plugin.secretary.zone("s1") == "green", "the wait is not cut to the compression's cap"
+    _aux(plugin, "_post_auxiliary_call")
+    assert main_tool(plugin, "patch", {"path": "/x"}) is None
+
+
 def test_red_zone_allows_reading_the_web(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)

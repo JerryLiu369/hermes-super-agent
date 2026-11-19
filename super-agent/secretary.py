@@ -93,16 +93,14 @@ def _paused(st: dict) -> bool:
 
 
 def _pause(st: dict, change) -> None:
-    """Apply *change* to the turn's pauses, keeping the clock stopped while any is open. A finished
-    pause is taken off by moving ``start`` forward."""
-    was = _paused(st)
+    """Apply *change* to the turn's pauses, keeping the clock stopped while any is open. The pause so
+    far is taken off by moving ``start`` forward before every change: a wait for the user that ends
+    while a compression goes on must not fall under the compression's cap."""
     now = time.monotonic()
-    length = _pause_length(st, now) if was else 0.0
+    if _paused(st):
+        st["start"] += _pause_length(st, now)
     change(st)
-    if _paused(st) and not was:
-        st["paused_since"] = now
-    elif was and not _paused(st):
-        st["start"] += length
+    st["paused_since"] = now
 
 
 def _pause_length(st: dict, now: float) -> float:
