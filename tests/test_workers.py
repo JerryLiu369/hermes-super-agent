@@ -149,3 +149,70 @@ def test_the_plugins_own_stop_is_not_a_refusal(plugin, make_ctx):
     plugin._post_tool_call("terminal", {"command": "ls"}, json.dumps({"error": blocked["message"]}),
                            status="blocked", error_type="plugin_block", error_message=blocked["message"], **CHILD)
     assert worker["pending_note"] is None
+
+
+def _pytest_run(failed):
+    out = ("============================= test session starts ==============================\n"
+           "collected 12 items\n\n"
+           f"FAILED tests/test_auth.py::test_login - assert 401 == 200\n"
+           f"========================= {failed} failed, {12 - failed} passed in 0.{failed}3s =========================")
+    return json.dumps({"output": out, "exit_code": 1})
+
+
+def test_edit_and_test_cycles_are_not_repeats(plugin, make_ctx):
+    """Each fix changes a file and then runs the same test command; the banner line is always the same."""
+    make_ctx()
+    start_turn(plugin)
+    worker = spawn_worker(plugin)
+    pytest_cmd = {"command": "pytest -q tests"}
+    for i in range(8):
+        w_post(plugin, "patch", {"path": "/srv/app/auth.py", "old_string": f"v{i}", "new_string": f"v{i + 1}"},
+               json.dumps({"success": True, "files_modified": ["/srv/app/auth.py"]}), api=f"p{i}")
+        w_post(plugin, "terminal", pytest_cmd, _pytest_run(3), api=f"r{i}")
+    assert worker["stop_reason"] is None, "the same failure after a new edit is the next round, not a loop"
+
+
+def test_the_same_write_again_is_not_a_change(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    worker = spawn_worker(plugin)
+    write = {"path": "/srv/app/auth.py", "content": "same"}
+    for i in range(5):
+        w_post(plugin, "write_file", write, json.dumps({"bytes_written": 4}), api=f"w{i}")
+        w_post(plugin, "terminal", {"command": "pytest -q tests"}, _pytest_run(3), api=f"r{i}")
+    assert worker["stop_reason"], "writing the same content again changes nothing, so the loop is caught"
+
+
+def test_a_different_outcome_at_the_end_is_progress(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    worker = spawn_worker(plugin)
+    for i in range(5):
+        w_post(plugin, "terminal", {"command": "pytest -q tests"}, _pytest_run(5 - i), api=f"r{i}")
+    assert worker["stop_reason"] is None
+
+
+def test_result_signature_ignores_ids_times_and_durations(plugin):
+    sig = plugin.util.result_signature
+    assert sig("deploy a1b2c3d failed after 42ms") == sig("deploy 9f8e7d6 failed after 7ms")
+    assert sig("req 123e4567-e89b-12d3-a456-426614174000 timed out at 12:04:59") == \
+        sig("req 00000000-0000-4000-8000-000000000000 timed out at 09:15:02")
+    assert sig("connection refused") != sig("permission denied")
+    assert sig("decade facade") == "decade facade", "plain words made of hex letters are kept"
+    assert sig(_pytest_run(3)) != sig(_pytest_run(2))
+
+
+def test_changed_files_are_recorded_by_absolute_path(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    w_post(plugin, "write_file", {"path": "wrangler.toml", "content": "x"},
+           json.dumps({"bytes_written": 1, "resolved_path": "/srv/app/wrangler.toml",
+                       "files_modified": ["/srv/app/wrangler.toml"]}))
+    w_post(plugin, "mcp_fs_edit_file", {"file_path": "/srv/app/src/main.ts", "edits": []}, '{"ok": true}')
+    plugin._subagent_stop(parent_session_id="s1", child_session_id="child-1", child_status="completed",
+                          child_summary=json.dumps({"status": "completed", "summary": "ok"}),
+                          tool_call_history=[{"tool_name": "write_file", "status": "ok",
+                                              "tool_input": {"targets": {"path": "wrangler.toml"}}}],
+                          duration_ms=1000)
+    assert plugin.ledger.get("sa-0-abc")["files"] == ["/srv/app/wrangler.toml", "/srv/app/src/main.ts"]

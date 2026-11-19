@@ -19,6 +19,9 @@ BRIEFING_MARKER = "=== Handoff briefing (attached by super-agent) ==="
 
 _RULES = (
     "- Do only the goal above. Never delete, stub out or rewrite working code or config just to make a check pass.\n"
+    "- Start from what the context above already established (paths, causes, what was tried) instead of "
+    "rediscovering it; recheck only what your next step depends on. Put several quick read-only checks in one "
+    "command instead of one per step.\n"
     "- If a step fails the same way twice, stop trying variations and report the blocker.\n"
     "- You cannot ask the user. If the goal needs a choice that is not yours to make (between workable approaches, a "
     "production change, spending, deleting data) and nothing above settles it, stop and report status "

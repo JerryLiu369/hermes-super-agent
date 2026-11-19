@@ -59,6 +59,16 @@ def check_host(ledger_error: Optional[str] = None) -> List[str]:
             "task history and crash recovery will not survive a gateway restart."
         )
 
+    # Plugin-host isolation: the plugin runs outside the Hermes process. Hook arguments still arrive,
+    # but the tool thread and the gateway's per-turn context (the chat's route key) do not.
+    if secretary.in_plugin_host():
+        issues.append(
+            "Hermes runs this plugin in a separate plugin-host process (plugins.isolation: host). Long terminal "
+            "commands stay in the foreground (no background detach), a report the user cut into waits for their "
+            "next message instead of waking the main agent, and `hermes super-agent status` is not available. "
+            "Set plugins.isolation: in_process for all of it."
+        )
+
     # 2 & 3. Host config checks using Hermes' own resolvers (degrade safely if Hermes is not importable).
     try:
         from gateway.display_config import resolve_display_setting
@@ -70,7 +80,8 @@ def check_host(ledger_error: Optional[str] = None) -> List[str]:
 
     # 4. Background detach relies on tools.interrupt, which is not on Hermes' published plugin API.
     try:
-        if float(config.get("terminal_auto_detach_seconds")) > 0 and not secretary.detach_available():
+        if (float(config.get("terminal_auto_detach_seconds")) > 0 and not secretary.in_plugin_host()
+                and not secretary.detach_available()):
             issues.append(
                 "Background detach is unavailable: this Hermes version has no tools.interrupt.request_yield/"
                 "consume_yield, so long terminal commands stay in the foreground and block the turn. "
@@ -151,6 +162,16 @@ def stage_startup(ledger_error: Optional[str] = None) -> None:
         _staged = True
         _checked = False
         _ledger_error = ledger_error
+        _pending_notice = None
+
+
+def set_ledger_error(error: str) -> None:
+    """The ledger failed when it was first opened, after load: check (again) before the next notice."""
+    global _staged, _checked, _ledger_error, _pending_notice
+    with _lock:
+        _staged = True
+        _checked = False
+        _ledger_error = error
         _pending_notice = None
 
 

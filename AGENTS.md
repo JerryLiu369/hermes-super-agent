@@ -78,7 +78,9 @@ the `hermes-agent` checkout.
 - `subagent_stop` (`tools/delegate_tool_results.py`): `parent_session_id, parent_turn_id, child_session_id,
   child_role, child_summary, child_status, tool_call_history, duration_ms`. **No subagent id**: the worker is found
   by `child_session_id`. `child_status` is `completed`, `interrupted` or `failed`. `tool_call_history` items carry
-  `tool_name`, `tool_input.targets` (not full args) and `status` (`ok`, `error`, `unknown`).
+  `tool_name`, `tool_input.targets` (not full args) and `status` (`ok`, `error`, `unknown`). `targets` keeps only
+  known keys (`_TOOL_INPUT_TARGET_KEYS`): of those, `path`, `file_path`, `target_path`, `destination_path`,
+  `new_path` and `dst` name where a write lands.
 - `on_session_end` (`agent/turn_finalizer.py`) fires after **every** `run_conversation`, i.e. every turn, with
   `session_id, task_id, turn_id, completed, failed, interrupted, turn_exit_reason, model, platform`. `completed`
   means a reply exists and the turn neither failed nor was interrupted. Only per-turn state may be dropped there.
@@ -160,6 +162,14 @@ the `hermes-agent` checkout.
   is the one `pre_llm_call` gets (`agent/turn_context.py` takes `_relay_pending_turn_id`). The compression summary
   call is `aux_task="compression"`. Since v0.23 `pre_llm_call` runs before turn-start compaction
   (`agent/turn_context.py`), and compaction also runs mid-turn (post-tool and pre-API), so it falls inside a turn.
+- `on_human_input_request` / `on_human_input_resolved` (`tools/human_input_hooks.py`, checked at
+  `v0.23.1+canary.20261115`): fired around every wait for a human (`kind` `approval`, `clarify`, `sudo`,
+  `elicitation`), paired by `request_id`, the resolved one exactly once (in a `finally`) with an `outcome`. Both carry
+  `session_id` (the approval context's, else `HERMES_SESSION_ID`), `session_key`, `platform` and a redacted
+  `prompt`, and **no `turn_id`**. On a Hermes without them, `register_hook` only warns (unknown hook names are
+  stored, `hermes_cli/plugins_context.py::_track_callback`).
+- `write_file` and `patch` results carry `files_modified`, the absolute resolved paths written, and `resolved_path`
+  (`tools/file_tools.py`); the path argument may be relative to the worker's terminal cwd.
 - `ctx.register_middleware(kind, fn)` (`hermes_cli/plugins_context.py`, kinds in `hermes_cli/middleware.py`).
   `tool_execution` middleware gets `tool_name, args, next_call` plus `task_id, session_id, tool_call_id, turn_id,
   api_request_id, conversation_id` (`agent/inline_tool_executors.py::tool_hook_ids`); `next_call(args)` is
@@ -173,7 +183,9 @@ the `hermes-agent` checkout.
 - `plugins.isolation` (`hermes_cli/plugin_isolation.py`, v0.23): `in_process` (default) or `host`, which loads
   third-party plugins in a separate plugin-host process that reaches Hermes only through `ctx`. In `host` mode
   `tools.interrupt` is the host's own copy, so background detach does nothing there (the command stays in the
-  foreground); contextvar-based checks in `context.py` lose their signal too.
+  foreground); contextvar-based checks in `context.py` lose their signal too, including `HERMES_SESSION_KEY`, so
+  the wake through `inject_message` cannot find the chat. Hermes sets `HERMES_PLUGIN_HOST_PROCESS=1` in the host's
+  environment (`HOST_PROCESS_ENV`); `secretary.in_plugin_host` reads it.
 - Hooks do **not** run on the tool thread: `pre_tool_call` and the bounded hooks run on a daemon worker under
   `plugins.hook_callback_timeout` (`hermes_cli/plugins_dispatch.py::_run_hook_callback_bounded`), so
   `threading.get_ident()` in a hook is not the tool's thread.
@@ -187,8 +199,10 @@ the `hermes-agent` checkout.
 - `ctx.register_cli_command(name, help, setup_fn, handler_fn, description)` (`hermes_cli/plugins_context.py`, checked at
   `v0.23.1+canary.20261113`) adds
   `hermes <name>`: `setup_fn` gets the argparse subparser and `handler_fn(args)` becomes its `func`
-  (`hermes_cli/main.py::_attach_plugin_cli_command`). Hermes loads plugins (so `register` runs, ledger recovery
-  included) in that CLI process only when the first argument is not a built-in command. Under `plugins.isolation:
+  (`hermes_cli/main.py::_attach_plugin_cli_command`). Hermes loads plugins (so `register` runs) in that CLI process
+  only when the first argument is not a built-in command. Every Hermes process loads plugins, so `register` must
+  not mark tasks lost: recovery runs at the first governed turn or subagent start, and the status command opens the
+  ledger read-only. Under `plugins.isolation:
   host` the call is skipped with a warning (`hermes_cli/plugin_isolation.py`, `HOST_SKIPPED_CTX_METHODS`). Importing
   `hermes_cli.main` runs Hermes' startup bootstrap, so tests repeat the wiring instead of importing it.
 - `ctx.inject_message(content, role="user", *, session_key=None, origin=None) -> bool` (`hermes_cli/plugins.py`,
@@ -201,7 +215,8 @@ the `hermes-agent` checkout.
   (`gateway/run_turn_persistence.py`). So the plugin suggests `[SILENT]` only in its own wake turn. Hermes never
   merges a queued internal event with a user message (`gateway/run_busy.py::_queue_or_replace_pending_event`), and
   each turn of a queued chain is judged by its own kind (`gateway/run_turn.py`).
-- `plugins.plugin_storage.plugin_db(name, file)` opens the ledger's SQLite file under `plugin-data/`.
+- `plugins.plugin_storage.plugin_db(name, file)` opens the ledger's SQLite file under `plugin-data/` through
+  `hermes_cli.sqlite_util.open_db`: WAL (with Hermes' network-filesystem fallback) and a 5 s busy timeout.
 
 **Already in Hermes (do not rebuild)**
 

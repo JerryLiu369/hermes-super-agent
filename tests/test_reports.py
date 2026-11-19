@@ -451,3 +451,28 @@ def test_a_report_in_prose_or_a_fenced_block(plugin, make_ctx):
     spawn_worker(plugin, sub_id="sa-2", child_session="child-3")
     _asks(plugin, child="child-3", report='Done. The config now reads {"status": "on"}.')
     assert plugin.ledger.get("sa-2")["status"] == "no_report", "prose quoting JSON is not a report"
+
+
+def test_a_report_without_a_status_is_not_taken_as_done(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _stop(plugin, json.dumps({"summary": "checked the config"}))
+    assert plugin.ledger.get("sa-0-abc")["status"] == "no_report"
+    assert "ended without the report" in start_turn(plugin, turn="t2")["context"]
+
+
+def test_prose_that_mentions_needs_decision_is_not_a_question(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _stop(plugin, "Audited reports.py: the needs_decision path and the no_report path both look right.")
+    assert plugin.ledger.get("sa-0-abc")["status"] == "no_report"
+
+
+def test_prose_that_gives_needs_decision_as_its_status_is_a_question(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin)
+    _stop(plugin, "**Status:** needs_decision\nShould the route move to the new zone or stay on the proxy?")
+    assert plugin.ledger.get("sa-0-abc")["status"] == "needs_decision"

@@ -70,17 +70,22 @@ def reset_all() -> None:
         _memory_fallback = False
 
 
+def _default_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "plugin-data" / PLUGIN_NAME / "ledger.db"
+
+
 def _open_default() -> sqlite3.Connection:
     try:
+        # WAL and a busy timeout, so the gateway and a status command can share the file.
         from plugins.plugin_storage import plugin_db
         return plugin_db(PLUGIN_NAME, "ledger.db")
     except Exception:
         pass
     try:
-        from hermes_constants import get_hermes_home
-        root = Path(get_hermes_home()) / "plugin-data" / PLUGIN_NAME
-        root.mkdir(parents=True, exist_ok=True)
-        return sqlite3.connect(str(root / "ledger.db"), check_same_thread=False)
+        path = _default_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return sqlite3.connect(str(path), timeout=5.0, check_same_thread=False)
     except Exception as e:
         logger.debug("super-agent: no plugin-data directory (%s); task ledger kept in memory", e)
     return sqlite3.connect(":memory:", check_same_thread=False)
@@ -146,9 +151,7 @@ def _still_running(task: dict) -> bool:
     return _alive(pid)
 
 
-def load(path: Optional[Path] = None) -> List[dict]:
-    """Open the ledger and return the tasks a Hermes process that has since exited left running.
-    Those are marked lost: Hermes does not resume a child across a restart."""
+def _open(path: Optional[Path] = None) -> None:
     global _db, _memory_fallback
     with _lock:
         if _db is not None:
@@ -156,11 +159,35 @@ def load(path: Optional[Path] = None) -> List[dict]:
                 _db.close()
             except Exception:
                 pass
-        _db = sqlite3.connect(str(path), check_same_thread=False) if path else _open_default()
+        _db = sqlite3.connect(str(path), timeout=5.0, check_same_thread=False) if path else _open_default()
         _memory_fallback = _is_memory_db(_db) if path is None else False
         for statement in _SCHEMA:
             _db.execute(statement)
         _db.commit()
+
+
+def open_readonly() -> str:
+    """Open the ledger file for reading only (the status command): nothing is created, expired or
+    marked lost. Returns the file; raises FileNotFoundError when no ledger has been written yet."""
+    global _db, _memory_fallback
+    with _lock:
+        if _db is not None:
+            return location()
+        path = _default_path()
+        if not path.is_file():
+            raise FileNotFoundError(2, "no ledger yet", str(path))
+        _db = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=5.0, check_same_thread=False)
+        _memory_fallback = False
+        return str(path)
+
+
+def load(path: Optional[Path] = None) -> List[dict]:
+    """Open the ledger and return the tasks a Hermes process that has since exited left running.
+    Those are marked lost: Hermes does not resume a child across a restart. Only the process that
+    runs the governed chats calls this (see ``reports.recover_lost``): a process elsewhere, such as
+    a status command on the host of a containerised gateway, cannot tell whether the gateway lives."""
+    with _lock:
+        _open(path)
         now = time.time()
         _expire(_db, now)
         _db.commit()
@@ -180,7 +207,7 @@ def load(path: Optional[Path] = None) -> List[dict]:
 
 def _conn() -> sqlite3.Connection:
     if _db is None:
-        load()
+        _open()
     return _db
 
 
@@ -239,9 +266,14 @@ def add_files(task_id: str, paths: Iterable[str]) -> None:
     if not new:
         return
 
+    def known(files: List[str], p: str) -> bool:
+        # A relative path (from a subagent's tool history) of a file already recorded by its absolute path.
+        rel = p[2:] if p.startswith("./") else p
+        return p in files or (not rel.startswith(("/", "../")) and any(f.endswith("/" + rel) for f in files))
+
     def change(t: dict):
         files = t.setdefault("files", [])
-        fresh = [p for p in dict.fromkeys(new) if p not in files]
+        fresh = [p for p in dict.fromkeys(new) if not known(files, p)]
         if not fresh:
             return False
         files.extend(fresh)

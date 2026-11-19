@@ -32,3 +32,28 @@ jobs:
 
       - name: Test
         run: pytest
+
+  hermes:
+    # The end-to-end tests load the plugin through a real Hermes and are skipped above. Hermes changes
+    # quickly; this job runs them against its current main so a renamed hook, tool or module shows here.
+    name: Against Hermes main
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Hermes
+        working-directory: hermes-agent
+        run: |
+          uv sync --locked --python 3.14 --group dev
+          uv pip install --python .venv/bin/python pyyaml
+
+      - name: Test
+        run: PYTHONPATH=hermes-agent hermes-agent/.venv/bin/python -m pytest -p no:cacheprovider tests

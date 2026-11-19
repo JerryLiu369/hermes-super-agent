@@ -8,10 +8,12 @@ here, in memory; what the task is, which files it changed and how it ended go to
 from __future__ import annotations
 
 import collections
+import hashlib
+import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import config, ledger, util
 
@@ -28,9 +30,27 @@ _WRITE_HINTS = ("write", "edit", "patch")
 _READ_HINTS = ("read", "search", "list", "view")
 
 
+# Arguments that name the file a write lands in (Hermes keeps the same keys as a subagent's targets).
+_PATH_KEYS = ("path", "file_path", "target_path", "destination_path", "new_path", "dst")
+
+
 def is_write(tool_name: str) -> bool:
     name = (tool_name or "").lower()
     return any(h in name for h in _WRITE_HINTS) and not any(h in name for h in _READ_HINTS)
+
+
+def written_paths(args: Any, result: Any = None) -> List[str]:
+    """The files a write changed: the absolute paths Hermes' write_file and patch report in
+    ``files_modified``, else the path arguments as given (which may be relative to the worker's cwd)."""
+    data = util.json_object(result) if result is not None else None
+    reported = data.get("files_modified") if data is not None else None
+    if isinstance(reported, list) and reported:
+        return [p for p in reported if isinstance(p, str) and p.strip()]
+    paths: List[str] = []
+    for key in _PATH_KEYS:
+        value = args.get(key) if isinstance(args, dict) else None
+        paths.extend(v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str) and v.strip())
+    return paths
 
 
 # ---------------------------------------------------------------- registry
@@ -74,6 +94,7 @@ def on_subagent_start(is_parent_governed: Callable[[str], bool], **kw: Any) -> N
         "last_activity": now,
         "rounds": set(),
         "repeats": collections.Counter(),
+        "writes": set(),
         "pending_note": None,
         "stop_reason": None,
         "stop_noted": False,
@@ -164,6 +185,18 @@ def _stop_message(w: dict) -> str:
             "status \"blocked\", what you tried, the exact blocker, and what you need from the main agent or the user.")
 
 
+def _new_write(w: dict, tool_name: str, args: dict) -> bool:
+    try:
+        payload = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        payload = str(args)
+    digest = hashlib.sha256(f"{tool_name}:{payload}".encode("utf-8", "replace")).hexdigest()
+    if digest in w["writes"]:
+        return False
+    w["writes"].add(digest)
+    return True
+
+
 def pre_tool_call(w: dict, tool_name: str, args: Optional[dict], **kw: Any) -> Optional[dict]:
     with _lock:
         w["last_activity"] = time.monotonic()
@@ -188,8 +221,9 @@ def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, *
                 w["pending_note"] = _joined(w["pending_note"], note)
         return
     args = args or {}
-    if is_write(tool_name) and isinstance(args.get("path"), str) and kw.get("status") != "error":
-        ledger.add_files(w["id"], [args["path"]])
+    wrote = is_write(tool_name) and kw.get("status") != "error"
+    if wrote:
+        ledger.add_files(w["id"], written_paths(args, result))
     if w["stopped_by_parent"]:
         # The main agent already stopped it; its last in-flight calls are not a stuck loop.
         return
@@ -200,6 +234,10 @@ def post_tool_call(w: dict, tool_name: str, args: Optional[dict], result: Any, *
     stopped = None
     with _lock:
         w["last_activity"] = time.monotonic()
+        if wrote and _new_write(w, tool_name, args):
+            # The worker changed something, so running the same check again is the next round of
+            # an edit-and-test cycle, not a loop. The same write again does not count as a change.
+            w["repeats"].clear()
         key = (util.call_signature(tool_name, args), outcome)
         w["repeats"][key] += 1
         count = w["repeats"][key]

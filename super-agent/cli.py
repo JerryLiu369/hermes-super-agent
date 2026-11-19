@@ -1,5 +1,7 @@
 """``hermes super-agent status``: what the plugin is set to and what its ledger holds, for the person
-running Hermes. It reads the same settings and ledger the gateway uses and changes nothing."""
+running Hermes. It reads the same settings and ledger the gateway uses and changes nothing: the ledger
+is opened read-only, and this process never marks a task lost (only the gateway can tell whether its
+subagents still run)."""
 
 from __future__ import annotations
 
@@ -49,11 +51,16 @@ def collect(limit: int = 10) -> dict:
         issues = preflight.check_host()
     except Exception as e:
         issues = [f"host check failed: {e}"]
+    missing = False
     try:
-        tasks, where, error = ledger.latest(max(0, limit)), ledger.location(), ""
+        where = ledger.open_readonly()
+        tasks, error = ledger.latest(max(0, limit)), ""
+    except FileNotFoundError as e:
+        tasks, where, error, missing = [], str(e.filename or ""), "", True
     except Exception as e:
         tasks, where, error = [], "", str(e) or type(e).__name__
-    return {"ledger": where, "ledger_error": error, "settings": settings, "host_issues": issues,
+    return {"ledger": where, "ledger_missing": missing, "ledger_error": error, "settings": settings,
+            "host_issues": issues,
             "tasks": [{k: t.get(k) for k in ("id", "parent", "status", "goal", "started", "ended", "files",
                                              "unreported", "awaiting", "question", "summary")} for t in tasks]}
 
@@ -62,6 +69,8 @@ def _text(info: dict, version: str) -> str:
     out = [f"super-agent {version}"]
     if info["ledger_error"]:
         out.append(f"Ledger:   unavailable ({info['ledger_error']})")
+    elif info.get("ledger_missing"):
+        out.append(f"Ledger:   {info['ledger']} (not created yet: no governed chat has run)")
     else:
         out.append(f"Ledger:   {info['ledger'] or 'in memory (lost when Hermes stops)'}")
     out += ["", "Settings"]
