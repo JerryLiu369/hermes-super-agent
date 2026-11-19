@@ -56,12 +56,25 @@ _clash_turn: Dict[str, str] = {}
 _failed_turn: Dict[str, str] = {}
 # session -> when the user last wrote (wall clock, as the ledger records). Outlives the turn.
 _user_at: Dict[str, float] = {}
+# An id a compaction left behind gets no reset hook; its entry is dropped once this old.
+_USER_AT_KEEP_S = 86400.0
 
 
 def user_wrote(session_id: str) -> None:
     if session_id:
+        now = time.time()
         with _lock:
-            _user_at[session_id] = time.time()
+            for old in [s for s, at in _user_at.items() if now - at > _USER_AT_KEEP_S]:
+                del _user_at[old]
+            _user_at[session_id] = now
+
+
+def move(old: str, new: str) -> None:
+    """A compaction moved the running turn to a new session id: its state goes with it."""
+    with _lock:
+        for seen in (_returned_turn, _clash_turn, _failed_turn, _user_at):
+            if old in seen:
+                seen[new] = seen.pop(old)
 
 
 def forget(session_id: str) -> None:

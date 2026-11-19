@@ -89,6 +89,7 @@ def on_subagent_start(is_parent_governed: Callable[[str], bool], **kw: Any) -> N
         "id": child_id,
         "session_id": kw.get("child_session_id") or "",
         "parent_session": owner,
+        "direct": parent_worker is None,
         "goal": str(kw.get("child_goal") or ""),
         "spawn": now,
         "last_activity": now,

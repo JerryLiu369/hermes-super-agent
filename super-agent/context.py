@@ -11,6 +11,8 @@ from . import config
 
 _lock = threading.Lock()
 _session_platforms: Dict[str, str] = {}
+# Ids a compaction left behind get no reset hook; the oldest entries go once there are this many.
+_MAX_SESSIONS = 512
 
 
 def info_get(info: Any, key: str) -> str:
@@ -39,7 +41,18 @@ def session_env(name: str) -> str:
 def remember_platform(session_id: str, platform: str) -> None:
     if session_id and platform:
         with _lock:
+            _session_platforms.pop(session_id, None)
             _session_platforms[session_id] = platform.strip().lower()
+            while len(_session_platforms) > _MAX_SESSIONS:
+                del _session_platforms[next(iter(_session_platforms))]
+
+
+def move_session(old: str, new: str) -> None:
+    """A compaction moved the chat to a new session id."""
+    with _lock:
+        platform = _session_platforms.pop(old, None)
+    if platform:
+        remember_platform(new, platform)
 
 
 def forget_session(session_id: str) -> None:

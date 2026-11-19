@@ -233,3 +233,53 @@ def test_red_zone_allows_reading_the_web(plugin, make_ctx):
     for allowed in ("web_search", "web_extract"):
         assert main_tool(plugin, allowed, {"query": "x"}) is None, allowed
 
+
+
+def test_a_compaction_that_moves_the_chat_to_a_new_session_keeps_the_turn(plugin, make_ctx, monkeypatch):
+    """Hermes' rotating compaction (compression.in_place: false) re-points the agent at a new session id
+    in the middle of a turn; the turn id stays, and auxiliary calls keep the id the turn started with."""
+    monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:weixin:dm:u1")
+    make_ctx()
+    start_turn(plugin, history=[{"role": "user", "content": "please fix the site"}])
+    steer = [{"role": "user", "content": "[OUT-OF-BAND USER MESSAGE] use the staging host"}]
+    plugin._pre_api_request(session_id="s1", turn_id="t1", conversation_history=steer)
+    plugin.secretary._turns["s1"]["start"] -= 200
+    _aux(plugin, "_pre_auxiliary_call")
+    _aux(plugin, "_post_auxiliary_call")
+
+    # After the rotation: pre_tool_call carries no platform, and the gateway still binds the old one.
+    assert main_tool(plugin, "terminal", {"command": "ls"}, session="s2")["action"] == "block", "the clock kept"
+    facts = plugin.secretary.turn_facts("s2", "t1")
+    assert facts["interjections"] == 1 and facts["session_key"] == "agent:main:weixin:dm:u1"
+    assert facts["sessions"] == ["s1", "s2"]
+    assert plugin.secretary.user_words("s2")[-1].endswith("use the staging host")
+    assert "s1" not in plugin.secretary._turns and plugin.secretary.user_words("s1") == []
+    assert plugin.context._session_platforms == {"s2": "weixin"}
+
+    _aux(plugin, "_pre_auxiliary_call", session="s1")
+    assert plugin.secretary._turns["s2"]["compressing"] == 1, "the old id still reaches the turn"
+    _aux(plugin, "_post_auxiliary_call", session="s1")
+    assert "s1" not in plugin.secretary._turns, "an old id never takes the turn back"
+    plugin._on_turn_end(session_id="s2", task_id="main", turn_id="t1", completed=True, failed=False,
+                        interrupted=False, turn_exit_reason="text_response(finish_reason=stop)", platform="weixin")
+    assert plugin.secretary._turns == {} and plugin.secretary._user_words == {}
+
+
+def test_a_new_session_with_another_turn_starts_fresh(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    plugin.secretary._turns["s1"]["start"] -= 200
+    start_turn(plugin, session="s2", turn="t9")
+    assert main_tool(plugin, "terminal", {"command": "ls"}, session="s2", turn="t9") is None
+    assert "s1" in plugin.secretary._turns
+
+
+def test_ids_a_compaction_left_behind_age_out(plugin, make_ctx):
+    make_ctx()
+    plugin.handoff._user_at["old"] = 0.0
+    plugin.handoff.user_wrote("s1")
+    assert "old" not in plugin.handoff._user_at
+    for n in range(plugin.context._MAX_SESSIONS + 5):
+        plugin.context.remember_platform(f"s{n}", "weixin")
+    assert len(plugin.context._session_platforms) == plugin.context._MAX_SESSIONS
+    assert "s0" not in plugin.context._session_platforms

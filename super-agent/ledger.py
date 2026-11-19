@@ -304,10 +304,11 @@ def mark_stopped(task_id: str, parent: str) -> None:
 
 def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str] = (),
            blockers: Iterable[str] = (), files: Iterable[str] = (), unreported: bool = False,
-           question: str = "", options: Iterable[str] = ()) -> None:
+           question: str = "", options: Iterable[str] = (), parent: str = "") -> None:
     """Close a task. *unreported* marks a result the user should hear about; it stays marked until
     a turn of the main agent that saw it ends with a reply nobody interrupted (see reports). A
-    *question* marks a task that waits for a decision until the chat dispatches again."""
+    *question* marks a task that waits for a decision until the chat dispatches again. *parent* files
+    the task under the chat's current session id when that has changed since dispatch."""
     add_files(task_id, files)
     now = time.time()
     with _lock:
@@ -315,6 +316,8 @@ def finish(task_id: str, status: str, summary: str = "", evidence: Iterable[str]
         if not found:
             return
         t = found[0]
+        if parent:
+            t["parent"] = parent
         status = (status or "").strip().lower()
         t.update(status=status if status and status != RUNNING else "unknown", ended=now, summary=str(summary or "")[:600],
                  evidence=[str(e)[:200] for e in evidence][:5], blockers=[str(b)[:200] for b in blockers][:5],

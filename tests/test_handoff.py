@@ -154,3 +154,13 @@ def test_failures_count_only_once_the_user_wrote(plugin, make_ctx):
     plugin.handoff.forget_chat("s1")
     start_turn(plugin, turn="t2", user="[ASYNC DELEGATION BATCH COMPLETE — d1] a unit finished")
     assert _dispatch(plugin, "t2")["action"] == "modify"
+
+
+def test_a_brief_returned_before_a_compaction_is_not_returned_again_after_it(plugin, make_ctx):
+    """A rotating compaction moves the turn to a new session id; the once-per-turn return goes with it."""
+    make_ctx()
+    start_turn(plugin)
+    assert main_tool(plugin, "delegate_task", {"goal": "fix it", "context": "short"})["action"] == "block"
+    res = main_tool(plugin, "delegate_task", {"goal": "fix it", "context": "short"}, session="s2")
+    assert res["action"] == "modify" and "please fix the site" in res["args"]["context"]
+    assert "s1" not in plugin.handoff._returned_turn and "s1" not in plugin.handoff._user_at
