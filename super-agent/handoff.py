@@ -280,7 +280,10 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
         tasks = [{"goal": args.get("goal"), "context": args.get("context")}] if args.get("goal") else []
     else:
         tasks = [dict(t) for t in args["tasks"] if isinstance(t, dict)]
-    if not tasks or any(BRIEFING_MARKER in str(t.get("context") or "") or "=== Handoff briefing (attached by proactive-agent) ===" in str(t.get("context") or "") for t in tasks):
+    if not tasks:
+        return None
+    if any(BRIEFING_MARKER in str(t.get("context") or "") or "=== Handoff briefing (attached by proactive-agent) ===" in str(t.get("context") or "") for t in tasks):
+        workers.expect_briefed(session_id, (t.get("goal") for t in tasks))
         return None
 
     limit = int(config.get("failed_task_limit"))
@@ -304,6 +307,7 @@ def gate(session_id: str, turn_id: str, args: Optional[dict], user_words: List[s
     for t in tasks:
         own = str(t.get("context") or "").strip()
         t["context"] = f"{own}\n\n{briefing}" if own else briefing
+    workers.expect_briefed(session_id, (t.get("goal") for t in tasks))
 
     if single_goal:
         return {"action": "modify", "args": {"context": tasks[0]["context"]}}

@@ -13,7 +13,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import config, ledger, util
 
@@ -22,6 +22,10 @@ logger = logging.getLogger("hermes.plugins.super_agent")
 _lock = threading.RLock()
 _workers: Dict[str, dict] = {}
 _by_session: Dict[str, str] = {}
+# chat -> goals the plugin briefed that Hermes has not started yet, with when. A subagent another plugin
+# starts through ctx.dispatch_tool never passes pre_tool_call, so it gets no briefing and no report format.
+_briefed: Dict[str, List[Tuple[str, float]]] = {}
+_BRIEFED_KEEP_S = 600.0
 
 _STALE_AFTER_S = 6 * 3600.0
 _DONE_KEEP_S = 600.0
@@ -54,6 +58,26 @@ def written_paths(args: Any, result: Any = None) -> List[str]:
 
 
 # ---------------------------------------------------------------- registry
+
+def expect_briefed(session_id: str, goals: Iterable[Any]) -> None:
+    """The plugin briefed these goals; the subagents Hermes starts for them were asked for its report."""
+    now = time.monotonic()
+    with _lock:
+        pending = [(g, at) for g, at in _briefed.get(session_id, []) if now - at < _BRIEFED_KEEP_S]
+        pending += [(str(g or "").strip(), now) for g in goals]
+        _briefed[session_id] = pending
+
+
+def _take_briefed(session_id: str, goal: str) -> bool:
+    pending = _briefed.get(session_id) or []
+    for i, (g, _) in enumerate(pending):
+        if g == goal.strip():
+            del pending[i]
+            if not pending:
+                _briefed.pop(session_id, None)
+            return True
+    return False
+
 
 def lookup(task_id: str = "", session_id: str = "") -> Optional[dict]:
     with _lock:
@@ -105,6 +129,7 @@ def on_subagent_start(is_parent_governed: Callable[[str], bool], **kw: Any) -> N
     }
     with _lock:
         _prune(now)
+        worker["briefed"] = parent_worker is None and _take_briefed(owner, worker["goal"])
         _workers[child_id] = worker
         if worker["session_id"]:
             _by_session[worker["session_id"]] = child_id
@@ -136,12 +161,14 @@ def forget_parent(parent_session: str) -> None:
     with _lock:
         for wid in [wid for wid, w in _workers.items() if w["parent_session"] == parent_session]:
             _drop(wid)
+        _briefed.pop(parent_session, None)
 
 
 def reset_all() -> None:
     with _lock:
         _workers.clear()
         _by_session.clear()
+        _briefed.clear()
 
 
 # ---------------------------------------------------------------- refused steps

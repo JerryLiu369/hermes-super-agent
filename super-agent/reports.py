@@ -163,7 +163,9 @@ def _finished_note(w: dict, final: str, evidence: List[str], duration_ms: Any, q
     elif final == NO_REPORT:
         changed = (ledger.get(w["id"]) or {}).get("files") or []
         said = util.short(summary, 300)
-        lines.append("- It ended without the report it was asked for, so whether it reached the goal is not known. "
+        asked = ("It ended without the report it was asked for" if w.get("briefed") or not w.get("direct") else
+                 "It was started without the plugin's briefing (by another plugin or tool), so it was not asked for a report")
+        lines.append(f"- {asked}, so whether it reached the goal is not known. "
                      + (f"Its last words: \"{said}\"." if said else "It returned no text.")
                      + (f" It changed: {', '.join(changed[:5])}." if changed else "")
                      + " Check the real end state before telling the user anything, and do not re-dispatch the same "

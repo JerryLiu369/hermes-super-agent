@@ -31,6 +31,29 @@ def test_result_with_evidence_lists_it(plugin, make_ctx):
     assert "HTTP/2 200" in injected["context"] and "Spot-check" in injected["context"]
 
 
+def test_a_subagent_another_plugin_started_is_not_told_it_was_asked_for_a_report(plugin, make_ctx):
+    # Another plugin's tool can start a subagent through ctx.dispatch_tool: pre_tool_call never sees it.
+    make_ctx()
+    start_turn(plugin)
+    plugin._subagent_start(parent_session_id="s1", child_session_id="child-1", child_subagent_id="sa-0-abc",
+                           child_goal="Research the topic")
+    assert plugin.workers.lookup(task_id="sa-0-abc") is not None, "it is still governed"
+    _stop(plugin, json.dumps({"findings": ["a"], "refs": ["b"]}))
+    assert plugin.ledger.get("sa-0-abc")["status"] == "no_report"
+    note = start_turn(plugin, turn="t2")["context"]
+    assert "started without the plugin's briefing" in note and "the report it was asked for" not in note
+
+
+def test_a_briefed_dispatch_is_matched_by_goal(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    spawn_worker(plugin, goal="  Fix the 522 on app.example.com ")
+    plugin._subagent_start(parent_session_id="s1", child_session_id="child-2", child_subagent_id="sa-1-abc",
+                           child_goal="Fix the 522 on app.example.com")
+    assert plugin.workers.lookup(task_id="sa-0-abc")["briefed"] is True
+    assert plugin.workers.lookup(task_id="sa-1-abc")["briefed"] is False, "one briefing, one subagent"
+
+
 def test_result_without_a_report_is_not_taken_as_done(plugin, make_ctx):
     make_ctx()
     start_turn(plugin)
