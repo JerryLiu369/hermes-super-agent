@@ -23,10 +23,11 @@ hermes plugins install JerryLiu369/hermes-super-agent/super-agent
 hermes plugins enable super-agent
 ```
 
-Three optional settings in `~/.hermes/config.yaml` work well alongside the plugin. Restart the gateway after changing them:
+Four settings in `~/.hermes/config.yaml` work well alongside the plugin. Restart the gateway after changing them:
 
 ```yaml
 delegation:
+  gateway_mode: background          # subagents run in the background on every platform, weixin included
   max_iterations: 90                # a subagent that needs more steps is usually stuck
 compression:
   in_place: true                    # Hermes' default: a compaction keeps the chat's session id
@@ -36,7 +37,7 @@ plugins:
       allow_gateway_injection: true # lets the plugin wake the main agent to finish a report you interrupted
 ```
 
-Without `allow_gateway_injection`, an interrupted report simply waits for your next message. `compression.in_place: true` is already Hermes' default, so only check that it has not been set to `false`: then every compaction gives the chat a new session id and the plugin forgets what it knew about the chat before (see the FAQ). The startup check tells the main agent once when it is off. If you installed the plugin under a different name, replace `super-agent` with the id shown by `hermes plugins list`.
+`delegation.gateway_mode: background` matters most. Under Hermes' default `auto`, platforms that do not show interim messages, weixin among them, run subagents inside the turn, so the chat waits until they finish (see Compatibility). The startup check tells the main agent once when a governed platform does this. Without `allow_gateway_injection`, an interrupted report simply waits for your next message. `compression.in_place: true` is already Hermes' default, so only check that it has not been set to `false`: then every compaction gives the chat a new session id and the plugin forgets what it knew about the chat before (see the FAQ). The startup check tells the main agent once when it is off. If you installed the plugin under a different name, replace `super-agent` with the id shown by `hermes plugins list`.
 
 ### Upgrading from `proactive-agent`
 
@@ -124,7 +125,7 @@ When a subagent finishes, the main agent's next turn opens with a verification n
 
 - if the subagent reported `completed` with evidence, the note lists that evidence and tells the main agent to spot-check the real state before telling you;
 - if it claimed success without evidence, left work unfinished, or was stopped for repeating itself, the note flags it; on a repeat stop, it tells the main agent to explain in one line what got stuck and what it will do instead;
-- if it ended without the JSON report it was asked for, or with one that has no `status` (Hermes still calls both `completed`), it is recorded as `no_report`, not as done: the note quotes its last words and the files it changed, and tells the main agent to check the real state and not to send the same plan again blindly;
+- if it ended without the JSON report it was asked for, or with one that has no `status` (Hermes still calls both `completed`), it is recorded as `no_report`, not as done: the note quotes its last words and the files it changed, and tells the main agent to check the real state and not to send the same plan again blindly. A subagent that another plugin started through its own tool never passed through the plugin's briefing, so its note says it was not asked for a report;
 - if the main agent intentionally stopped the worker with `action='stop'`, it is noted as stopped rather than failed.
 
 Background subagents deliver their results in an internal turn of their own. If you send a message while that turn is running, Hermes merges your message into the turn, and the main agent often answers only your new message and forgets the finished background job. To make sure no result is lost, the plugin keeps every background result marked as **unreported** until a turn that showed it finishes with a reply you did not interrupt:
@@ -188,6 +189,9 @@ It makes no model calls of its own; it only attaches compact notes to the main a
 **Will it change how cron jobs, the CLI, or other chat platforms behave?**
 No. Only platforms listed in `governed_platforms` (and the subagents spawned from them) are governed. Cron jobs, CLI sessions, and unlisted platforms run untouched.
 
+**Can I use it alongside hermes-muse?**
+Yes, though the two may get in each other's way a little. They focus on different things. [hermes-muse](https://github.com/xiaohei-info/hermes-muse) is about being proactive: event-driven reminders and scheduled scans of what to follow up on. Hermes Super Agent takes the super-agent route: better dispatch of work to subagents, and results that are checked and reach you.
+
 **Does it replace Hermes' command approvals or loop guard?**
 No. Both continue working as usual. When Hermes' approval blocks a subagent command, the plugin simply instructs the subagent not to look for a workaround and to bring the question back to the main agent.
 
@@ -219,6 +223,7 @@ By default (`compression.in_place: true`) Hermes compacts the chat under the sam
 - **Hermes Agent** 0.22 or later (verified against v0.22.7).
 - Some features need Hermes' default `plugins.isolation: in_process`. With `host`, the plugin runs in a separate process: long commands stay in the foreground, a report you cut into waits for your next message instead of waking the main agent, and `hermes super-agent status` is not available because Hermes does not register plugin CLI commands in the plugin host. The startup check tells the main agent once.
 - Moving commands to the background uses two Hermes functions (`tools.interrupt.request_yield` and `consume_yield`) that are not on Hermes' published plugin API. If a Hermes release moves them, commands stay in the foreground, and the startup check tells the main agent once.
+- **Platforms.** weixin is the platform used day to day; the others were checked against Hermes' platform defaults, not in a live chat. Under Hermes' default `delegation.gateway_mode: auto`, subagents run inside the turn on weixin, wecom, dingtalk, signal, whatsapp_cloud, bluebubbles, photon, email and sms, which do not show interim messages by default, and on mattermost unless `display.platforms.mattermost.interim_assistant_messages` is set. Telegram, Discord, Feishu, Slack, Matrix, WhatsApp and the rest run them in the background. With `gateway_mode: background`, every platform does. Subagent results reach the main agent the same way on every platform. Hermes' own long-task notices go to the user where a platform shows them, and the plugin only adds notes for the main agent, so the two never send the same message. To govern another platform, add it to `governed_platforms`.
 - **Python** 3.10 or later, with zero runtime dependencies.
 - **CI** runs `ruff check` and `pytest` across Python 3.10 through 3.14, and the end-to-end tests against Hermes' current main.
 

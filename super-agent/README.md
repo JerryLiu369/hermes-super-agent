@@ -11,9 +11,11 @@ hermes plugins install JerryLiu369/hermes-super-agent/super-agent
 hermes plugins enable super-agent
 ```
 
-Optional, in `~/.hermes/config.yaml` (restart the gateway after changing it):
+Recommended, in `~/.hermes/config.yaml` (restart the gateway after changing it):
 
 ```yaml
+delegation:
+  gateway_mode: background          # otherwise weixin and other platforms without interim messages wait for subagents
 plugins:
   entries:
     super-agent:

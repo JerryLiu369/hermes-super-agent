@@ -23,10 +23,11 @@ hermes plugins install JerryLiu369/hermes-super-agent/super-agent
 hermes plugins enable super-agent
 ```
 
-建议在 `~/.hermes/config.yaml` 中顺手加上下面三项可选配置，改完后重启网关：
+建议在 `~/.hermes/config.yaml` 中加上下面四项配置，改完后重启网关：
 
 ```yaml
 delegation:
+  gateway_mode: background          # 所有平台（包括微信）都把子代理放到后台跑
   max_iterations: 90                # 需要更多步数的子代理，多半已经卡住了
 compression:
   in_place: true                    # Hermes 默认值：压缩时对话保留原来的会话 id
@@ -36,7 +37,7 @@ plugins:
       allow_gateway_injection: true # 允许插件唤醒助手，把被你新消息打断的汇报补上
 ```
 
-不开 `allow_gateway_injection` 也不影响日常使用，被你打断的汇报会等你发下一条消息时再一并补上。`compression.in_place: true` 本来就是 Hermes 的默认值，只要确认没被改成 `false` 就行：改成 `false` 后，每次压缩都会让对话换一个新的会话 id，插件会忘掉压缩前对这个对话知道的东西（见常见问题）。这项没开时，启动自检会告诉助手一次。如果安装时用了别的插件名，请把配置里的 `super-agent` 换成 `hermes plugins list` 显示的实际名称。
+最要紧的是 `delegation.gateway_mode: background`。Hermes 默认的 `auto` 下，不显示中途消息的平台（微信就是其中之一）会在这一轮里直接跑子代理，聊天要等它跑完才有回应（见兼容性）。受管平台出现这种情况时，启动自检会告诉助手一次。不开 `allow_gateway_injection` 也不影响日常使用，被你打断的汇报会等你发下一条消息时再一并补上。`compression.in_place: true` 本来就是 Hermes 的默认值，只要确认没被改成 `false` 就行：改成 `false` 后，每次压缩都会让对话换一个新的会话 id，插件会忘掉压缩前对这个对话知道的东西（见常见问题）。这项没开时，启动自检会告诉助手一次。如果安装时用了别的插件名，请把配置里的 `super-agent` 换成 `hermes plugins list` 显示的实际名称。
 
 ### 从 `proactive-agent` 升级
 
@@ -124,7 +125,7 @@ Hermes 能发现子代理在重复调用工具，但对子代理只提醒、不�
 
 - 子代理报 `completed` 且附有证据时，列出这些证据，提醒助手在向你报喜前先抽查真实状态；
 - 子代理空口说完成却没给证据、没做完，或因原地打转被插件叫停时，直接标出警告；如果是因重复被叫停，还会要求助手用一句话告诉你卡在了哪里、接下来准备怎么办；
-- 子代理没按要求交 JSON 报告就结束了，或者交的报告里没有 `status`（这两种 Hermes 都照样记为 `completed`）时，账本记为 `no_report`，不算完成：说明里会引用它最后说的话和改过的文件，要求助手先核实现场，别原样再派一次；
+- 子代理没按要求交 JSON 报告就结束了，或者交的报告里没有 `status`（这两种 Hermes 都照样记为 `completed`）时，账本记为 `no_report`，不算完成：说明里会引用它最后说的话和改过的文件，要求助手先核实现场，别原样再派一次。如果子代理是别的插件通过自己的工具派出去的，它没经过插件的背景材料，说明里会讲明它本来就没被要求交报告；
 - 助手自己用 `action='stop'` 主动喊停的任务，会注明是主动停止，不作失败处理。
 
 后台子代理的结果会通过单独的一轮内部唤醒交给助手。如果这轮汇报还在跑的时候你刚好发来新消息，Hermes 会把你的消息并进同一轮，助手往往只顾着回答你的新问题，把刚才跑完的结果忘在一边。为了防止漏报，插件会一直把后台结果标记为**尚未告知你**（`unreported`），直到展示过该结果的那一轮以一次未被你打断的回复顺利结束：
@@ -188,6 +189,9 @@ plugins:
 **会影响定时任务、命令行（CLI）或其他聊天平台吗？**
 不会。只有列在 `governed_platforms` 里的平台及其派出的子代理受插件管理，定时任务和其他平台完全按原样运行。
 
+**能和 hermes-muse 一起用吗？**
+可以，不过两者同时装可能会有一点冲突。它们的侧重点不一样：[hermes-muse](https://github.com/xiaohei-info/hermes-muse) 重在“主动”，比如事件驱动的提醒、定时扫描该跟进的事项；Hermes Super Agent 走的是超级代理路线，重在把活派得更好，让结果经过核对、最终送到你手里。
+
 **它会取代 Hermes 自带的命令审批或循环检测吗？**
 不会，这两项机制照常工作。当 Hermes 的审批拦下子代理的命令时，插件只是及时提醒子代理不要绕路硬试，而是把问题带回来交给助手处理。
 
@@ -219,6 +223,7 @@ Hermes 会把你的消息并进那轮汇报里，助手往往只顾回答你，�
 - **Hermes Agent** 0.22 及以上（已在 v0.22.7 上验证）。
 - 部分功能需要 Hermes 保持默认的 `plugins.isolation: in_process`。设为 `host` 时插件跑在单独的进程里：长命令只会照常在前台运行，被你打断的汇报要等你下一条消息才补上、不会再唤醒助手，`hermes super-agent status` 也用不了，因为 Hermes 在插件宿主进程里不注册插件的命令行命令。启动自检会告诉助手一次。
 - 长命令转后台用到了 Hermes 的两个函数（`tools.interrupt.request_yield` 和 `consume_yield`），它们不在 Hermes 公开的插件 API 清单里。如果某个 Hermes 版本挪走了它们，命令会照常在前台运行，启动自检会告诉助手一次。
+- **平台**：日常实际使用的是微信；其他平台是对照 Hermes 的平台默认值核对的，没有在真实聊天里跑过。Hermes 默认的 `delegation.gateway_mode: auto` 下，微信、企业微信（wecom）、钉钉、Signal、WhatsApp Cloud、BlueBubbles、Photon、邮件和短信默认不显示中途消息，会在这一轮里直接跑子代理；Mattermost 也一样，除非设置了 `display.platforms.mattermost.interim_assistant_messages`。Telegram、Discord、飞书、Slack、Matrix、WhatsApp 等其余平台会放到后台跑。设成 `gateway_mode: background` 后，所有平台都在后台跑。子代理的结果在各个平台上都以同样的方式回到助手手里。Hermes 自己的长任务提示（在支持的平台上）是发给用户的，插件只给助手加说明，所以两边不会发出重复的消息。想让插件管别的平台，把它加进 `governed_platforms` 就行。
 - **Python** 3.10 及以上，零运行时依赖。
 - **CI** 在 Python 3.10 至 3.14 上运行 `ruff check` 与 `pytest`，并针对 Hermes 当前的 main 跑一遍端到端测试。
 

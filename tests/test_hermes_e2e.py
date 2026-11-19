@@ -397,3 +397,25 @@ def test_a_rotating_compaction_keeps_the_turn_and_the_result_follows_the_chat(he
         assert any("HTTP/2 200" in n for n in ledger.pop_notes(new_id))
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("gateway_mode", ["auto", "background"])
+def test_inline_delegation_check_covers_every_hermes_platform(plugin, make_ctx, tmp_path, gateway_mode):
+    # Under gateway_mode auto, Hermes joins a delegation inside the turn on a chat whose interim assistant
+    # messages are off: the low and minimal display tiers, and Mattermost unless it opts in (gateway/run_turn.py).
+    from gateway.platform_registry import platform_registry
+
+    home = tmp_path / "hermes_home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(yaml.safe_dump({"delegation": {"gateway_mode": gateway_mode}}), encoding="utf-8")
+    plugins_mod.discover_plugins(force=True)
+    entries = {e.name: str(getattr(e, "display_tier", "") or "").lower() for e in platform_registry.all_entries()}
+    assert {"weixin", "telegram", "feishu", "mattermost"} <= set(entries)
+    make_ctx(config={"governed_platforms": sorted(entries)})
+
+    issues = plugin.preflight.check_host()
+    flagged = {name for name in entries if any(f"Governed platform '{name}' resolves" in i for i in issues)}
+    expected = {name for name, tier in entries.items() if tier in ("low", "minimal") or name == "mattermost"}
+    assert flagged == (expected if gateway_mode == "auto" else set())
+    if gateway_mode == "auto":
+        assert {"weixin", "wecom", "dingtalk"} <= flagged and not {"telegram", "feishu", "discord", "slack"} & flagged

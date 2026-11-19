@@ -119,6 +119,20 @@ the `hermes-agent` checkout.
 - The `delegate_task` dispatch result has `subagent_ids` and `live_transcripts` (`tools/delegate_tool_dispatch.py`).
   `action='steer'` takes `subagent_id` and `message` (`tools/delegate_tool.py`, `_LIVE_CONTROL_PARAMS`). Hermes does
   not tell the main agent at turn start which background subagents are running; `action='list'` shows them on request.
+- `ctx.dispatch_tool(name, args, parent_agent=...)` (`hermes_cli/plugins_context.py`) calls `tools.registry.dispatch`
+  directly, so no `pre_tool_call`, `post_tool_call` or `transform_tool_result` runs for it. A plugin tool that starts a
+  subagent this way (hermes-muse's `muse_manage` `delegate` and `research_start`) gets no briefing from `handoff.gate`,
+  but `subagent_start` and `subagent_stop` fire as usual. `subagent_start`'s `child_goal` is the task goal, stripped
+  (`tools/delegate_tool_tasks.py`). Checked at `v0.23.1+canary.20261115`.
+- Platform display defaults (`gateway/display_config.py`): a platform plugin declares `display_tier` on its
+  `PlatformEntry`. `low` and `minimal` turn `interim_assistant_messages` off (weixin, wecom, wecom_callback, dingtalk,
+  signal, whatsapp_cloud, bluebubbles, photon: low; email, sms: minimal); `high` (telegram, discord) and `medium`
+  (feishu, slack, matrix, mattermost, whatsapp, buzz) leave it on. Mattermost's interim messages are off unless
+  `display.platforms.mattermost.interim_assistant_messages` is set (`gateway/run_turn.py`,
+  `require_platform_override_for`). `tools/delegate_tool_config.py::gateway_delegation_inline` joins a delegation
+  inside the turn under `gateway_mode: auto` when interim messages are off; `inline`/`background`/`async` override.
+  `preflight._interim_enabled` mirrors this, and `tests/test_hermes_e2e.py` checks it against every registered
+  platform. Checked at `v0.23.1+canary.20261115` and main `8d70b88a`.
 - Some tools (by default `process_manage`, `session_search`, `todo_list`, ...; `tools.tool_search.defer`) are offered
   behind the `tool_search` / `tool_call` bridge. Hermes peels the bridge before plugin hooks run
   (`agent/tool_executor.py`), so `pre_tool_call` and the other tool hooks see the underlying tool name. Checked at
