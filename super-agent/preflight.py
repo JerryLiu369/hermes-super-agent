@@ -20,28 +20,9 @@ _ledger_error: Optional[str] = None
 _pending_notice: Optional[str] = None
 
 
-def _has_platform_display_override(user_config: Any, platform_key: str, setting: str) -> bool:
-    display = user_config.get("display") if isinstance(user_config, dict) else None
-    if not isinstance(display, dict):
-        return False
-    platforms = display.get("platforms")
-    if not isinstance(platforms, dict):
-        return False
-    platform_cfg = platforms.get(platform_key)
-    return isinstance(platform_cfg, dict) and setting in platform_cfg
-
-
-def _interim_enabled(user_config: Any, platform_key: str, resolve_display_setting: Any) -> bool:
-    # Mirrors gateway/run_turn.py: Mattermost suppresses interim assistant messages unless
-    # display.platforms.mattermost.interim_assistant_messages is explicitly configured.
-    if platform_key == "mattermost" and not _has_platform_display_override(
-        user_config, platform_key, "interim_assistant_messages"
-    ):
-        return False
-    value = resolve_display_setting(user_config, platform_key, "interim_assistant_messages", True)
-    if isinstance(value, str) and value.strip().lower() == "generic":
-        return False
-    return bool(value)
+# delegation.gateway_mode values with which Hermes never runs a delegation inside the turn
+# (tools/delegate_tool_config.py::_GATEWAY_MODES). "auto", the default, does on some platforms.
+_BACKGROUND_MODES = ("background", "async")
 
 
 def check_host(ledger_error: Optional[str] = None) -> List[str]:
@@ -69,11 +50,9 @@ def check_host(ledger_error: Optional[str] = None) -> List[str]:
             "Set plugins.isolation: in_process for all of it."
         )
 
-    # 2, 3 & 5. Host config checks using Hermes' own resolvers (degrade safely if Hermes is not importable).
+    # 2, 3 & 5. Host config checks on Hermes' effective config (degrade safely if Hermes is not importable).
     try:
-        from gateway.display_config import resolve_display_setting
         from hermes_cli.config_effective import load_user_config_effective
-        from tools.delegate_tool_config import gateway_delegation_inline
     except Exception as e:
         logger.debug("super-agent: skipping host config preflight (Hermes modules unavailable: %s)", e)
         return issues
@@ -102,22 +81,21 @@ def check_host(ledger_error: Optional[str] = None) -> List[str]:
         logger.debug("super-agent: could not load effective user config for preflight: %s", e)
         return issues
 
-    # 2. Check whether governed platforms resolve delegate_task to inline (blocking) mode.
-    for platform_key in config.governed_platforms():
-        try:
-            interim_enabled = _interim_enabled(user_config, platform_key, resolve_display_setting)
-            if gateway_delegation_inline(user_config, platform_key, interim_enabled=interim_enabled):
-                issues.append(
-                    f"Governed platform '{platform_key}' resolves delegate_task to synchronous inline mode "
-                    f"(blocking the chat turn). Set delegation.gateway_mode: background or enable "
-                    f"display.interim_assistant_messages (or display.platforms.{platform_key}."
-                    f"interim_assistant_messages: true) in ~/.hermes/config.yaml."
-                )
-        except Exception as e:
-            logger.debug("super-agent: delegation mode check failed for %s: %s", platform_key, e)
+    # 2. Only gateway_mode: background keeps every governed chat from waiting for its subagents. Under "auto"
+    # Hermes runs them inside the turn wherever interim assistant messages are off, and that is the user's
+    # display choice, not the plugin's.
+    delegation_cfg = user_config.get("delegation") if isinstance(user_config, dict) else None
+    raw_mode = delegation_cfg.get("gateway_mode") if isinstance(delegation_cfg, dict) else None
+    mode = str(raw_mode or "auto").strip().lower()
+    if config.governed_platforms() and mode not in _BACKGROUND_MODES:
+        issues.append(
+            f"delegation.gateway_mode is {mode}{' (the default)' if not raw_mode else ''}, so Hermes may run "
+            "subagents inside the turn and the chat waits until they finish (with auto, it does so on any platform "
+            "whose interim assistant messages are off, as on weixin by default). Set delegation.gateway_mode: "
+            "background in ~/.hermes/config.yaml."
+        )
 
     # 3. Check whether delegation.max_iterations is unset (defaults to 250) or notably high (> 120).
-    delegation_cfg = user_config.get("delegation") if isinstance(user_config, dict) else None
     raw_max_iter = delegation_cfg.get("max_iterations") if isinstance(delegation_cfg, dict) else None
     if raw_max_iter is None:
         max_iter = default_max_iter

@@ -37,7 +37,7 @@ plugins:
       allow_gateway_injection: true # 允许插件唤醒助手，把被你新消息打断的汇报补上
 ```
 
-最要紧的是 `delegation.gateway_mode: background`。Hermes 默认的 `auto` 下，不显示中途消息的平台（微信就是其中之一）会在这一轮里直接跑子代理，聊天要等它跑完才有回应（见兼容性）。受管平台出现这种情况时，启动自检会告诉助手一次。不开 `allow_gateway_injection` 也不影响日常使用，被你打断的汇报会等你发下一条消息时再一并补上。`compression.in_place: true` 本来就是 Hermes 的默认值，只要确认没被改成 `false` 就行：改成 `false` 后，每次压缩都会让对话换一个新的会话 id，插件会忘掉压缩前对这个对话知道的东西（见常见问题）。这项没开时，启动自检会告诉助手一次。如果安装时用了别的插件名，请把配置里的 `super-agent` 换成 `hermes plugins list` 显示的实际名称。
+最要紧的是 `delegation.gateway_mode: background`：在任何平台上，助手都先回你一句，结果跑完再单独发。Hermes 默认的 `auto` 下，一个平台等不等子代理取决于它的显示设置，微信默认是等的（见兼容性）。中途消息发不发（`display.interim_assistant_messages`）由你自己定，插件只要求 `gateway_mode`。`gateway_mode` 不是 `background` 时，启动自检会告诉助手一次。不开 `allow_gateway_injection` 也不影响日常使用，被你打断的汇报会等你发下一条消息时再一并补上。`compression.in_place: true` 本来就是 Hermes 的默认值，只要确认没被改成 `false` 就行：改成 `false` 后，每次压缩都会让对话换一个新的会话 id，插件会忘掉压缩前对这个对话知道的东西（见常见问题）。这项没开时，启动自检会告诉助手一次。如果安装时用了别的插件名，请把配置里的 `super-agent` 换成 `hermes plugins list` 显示的实际名称。
 
 ### 从 `proactive-agent` 升级
 
@@ -223,7 +223,7 @@ Hermes 会把你的消息并进那轮汇报里，助手往往只顾回答你，�
 - **Hermes Agent** 0.22 及以上（已在 v0.22.7 上验证）。
 - 部分功能需要 Hermes 保持默认的 `plugins.isolation: in_process`。设为 `host` 时插件跑在单独的进程里：长命令只会照常在前台运行，被你打断的汇报要等你下一条消息才补上、不会再唤醒助手，`hermes super-agent status` 也用不了，因为 Hermes 在插件宿主进程里不注册插件的命令行命令。启动自检会告诉助手一次。
 - 长命令转后台用到了 Hermes 的两个函数（`tools.interrupt.request_yield` 和 `consume_yield`），它们不在 Hermes 公开的插件 API 清单里。如果某个 Hermes 版本挪走了它们，命令会照常在前台运行，启动自检会告诉助手一次。
-- **平台**：日常实际使用的是微信；其他平台是对照 Hermes 的平台默认值核对的，没有在真实聊天里跑过。Hermes 默认的 `delegation.gateway_mode: auto` 下，微信、企业微信（wecom）、钉钉、Signal、WhatsApp Cloud、BlueBubbles、Photon、邮件和短信默认不显示中途消息，会在这一轮里直接跑子代理；Mattermost 也一样，除非设置了 `display.platforms.mattermost.interim_assistant_messages`。Telegram、Discord、飞书、Slack、Matrix、WhatsApp 等其余平台会放到后台跑。设成 `gateway_mode: background` 后，所有平台都在后台跑。子代理的结果在各个平台上都以同样的方式回到助手手里。Hermes 自己的长任务提示（在支持的平台上）是发给用户的，插件只给助手加说明，所以两边不会发出重复的消息。想让插件管别的平台，把它加进 `governed_platforms` 就行。
+- **平台**：日常实际使用的是微信；其他平台是对照 Hermes 的平台默认值核对的，没有在真实聊天里跑过。设成 `delegation.gateway_mode: background` 后，所有平台都把子代理放到后台跑。Hermes 默认的 `auto` 下，平台关着中途消息时会在这一轮里直接跑子代理：微信、企业微信（wecom）、钉钉、Signal、WhatsApp Cloud、BlueBubbles、Photon、邮件、短信和 Mattermost 默认就是这样；Telegram、Discord、飞书、Slack、Matrix、WhatsApp 等其余平台默认放到后台跑。子代理的结果在各个平台上都以同样的方式回到助手手里。Hermes 自己的长任务提示（在支持的平台上）是发给用户的，插件只给助手加说明，所以两边不会发出重复的消息。想让插件管别的平台，把它加进 `governed_platforms` 就行。
 - **Python** 3.10 及以上，零运行时依赖。
 - **CI** 在 Python 3.10 至 3.14 上运行 `ruff check` 与 `pytest`，并针对 Hermes 当前的 main 跑一遍端到端测试。
 

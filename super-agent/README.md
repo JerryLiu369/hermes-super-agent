@@ -15,7 +15,7 @@ Recommended, in `~/.hermes/config.yaml` (restart the gateway after changing it):
 
 ```yaml
 delegation:
-  gateway_mode: background          # otherwise weixin and other platforms without interim messages wait for subagents
+  gateway_mode: background          # subagents run in the background on every platform; weixin otherwise waits
 plugins:
   entries:
     super-agent:

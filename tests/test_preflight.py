@@ -32,8 +32,7 @@ def _write_hermes_config(tmp_path, monkeypatch, data):
 
 def test_clean_host_injects_nothing(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"interim_assistant_messages": True},
-        "delegation": {"max_iterations": 90},
+        "delegation": {"gateway_mode": "background", "max_iterations": 90},
     })
     make_ctx()
     assert start_turn(plugin, turn="t1") is None
@@ -42,8 +41,7 @@ def test_clean_host_injects_nothing(plugin, make_ctx, tmp_path, monkeypatch):
 
 def test_memory_fallback_reported_once(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"interim_assistant_messages": True},
-        "delegation": {"max_iterations": 90},
+        "delegation": {"gateway_mode": "background", "max_iterations": 90},
     })
     monkeypatch.setattr(plugin.ledger, "_open_default", lambda: sqlite3.connect(":memory:", check_same_thread=False))
     make_ctx()
@@ -55,8 +53,7 @@ def test_memory_fallback_reported_once(plugin, make_ctx, tmp_path, monkeypatch):
 
 def test_explicit_ledger_path_never_triggers_fallback_warning(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"interim_assistant_messages": True},
-        "delegation": {"max_iterations": 90},
+        "delegation": {"gateway_mode": "background", "max_iterations": 90},
     })
     plugin.ledger.load(tmp_path / "explicit.db")
     assert plugin.ledger.is_memory_fallback() is False
@@ -68,8 +65,7 @@ def test_explicit_ledger_path_never_triggers_fallback_warning(plugin, make_ctx, 
 
 def test_ledger_open_error_reported_once(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"interim_assistant_messages": True},
-        "delegation": {"max_iterations": 90},
+        "delegation": {"gateway_mode": "background", "max_iterations": 90},
     })
     monkeypatch.setattr(plugin.reports, "recover_lost", lambda: (_ for _ in ()).throw(PermissionError("read-only fs")))
     make_ctx()
@@ -80,46 +76,36 @@ def test_ledger_open_error_reported_once(plugin, make_ctx, tmp_path, monkeypatch
 
 
 @requires_hermes
-def test_inline_delegation_detected_via_hermes_display_and_mode(plugin, make_ctx, tmp_path, monkeypatch):
-    _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"platforms": {"weixin": {"interim_assistant_messages": False}}},
-        "delegation": {"max_iterations": 90},
-    })
+@pytest.mark.parametrize("mode, warned", [
+    (None, True), ("auto", True), ("inline", True), ("Background", False), ("async", False),
+])
+def test_gateway_mode_other_than_background_is_reported(plugin, make_ctx, tmp_path, monkeypatch, mode, warned):
+    # Interim assistant messages are on, so auto would run in the background today; the plugin still asks for
+    # background, because interim messages are the user's display choice.
+    delegation = {"max_iterations": 90} if mode is None else {"gateway_mode": mode, "max_iterations": 90}
+    _write_hermes_config(tmp_path, monkeypatch, {"display": {"interim_assistant_messages": True},
+                                                 "delegation": delegation})
     make_ctx()
-
     first = start_turn(plugin, turn="t1")
-    assert first
-    assert "weixin" in first["context"] and "inline" in first["context"]
-    assert "delegation.gateway_mode: background" in first["context"]
+    text = first["context"] if first else ""
+    assert ("delegation.gateway_mode is" in text) is warned
+    if warned:
+        assert "Set delegation.gateway_mode: background" in text and "interim_assistant_messages:" not in text
+        assert ("(the default)" in text) is (mode is None)
     assert start_turn(plugin, turn="t2") is None
 
 
 @requires_hermes
-def test_background_gateway_mode_overrides_disabled_interim(plugin, make_ctx, tmp_path, monkeypatch):
-    _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"interim_assistant_messages": False},
-        "delegation": {"gateway_mode": "background", "max_iterations": 90},
-    })
-    make_ctx()
-    assert start_turn(plugin, turn="t1") is None
-
-
-@requires_hermes
-def test_mattermost_without_override_warns_inline(plugin, make_ctx, tmp_path, monkeypatch):
-    _write_hermes_config(tmp_path, monkeypatch, {
-        "delegation": {"max_iterations": 90},
-    })
-    make_ctx(config={"governed_platforms": ["mattermost"]})
-
-    first = start_turn(plugin, platform="mattermost", turn="t1")
-    assert first and "mattermost" in first["context"] and "inline" in first["context"]
+def test_gateway_mode_is_not_reported_when_nothing_is_governed(plugin, make_ctx, tmp_path, monkeypatch):
+    _write_hermes_config(tmp_path, monkeypatch, {"delegation": {"max_iterations": 90}})
+    make_ctx(config={"governed_platforms": []})
+    assert not any("gateway_mode" in i for i in plugin.preflight.check_host())
 
 
 @requires_hermes
 def test_high_or_unset_max_iterations_warns_once(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"interim_assistant_messages": True},
-        "delegation": {"max_iterations": 200},
+        "delegation": {"gateway_mode": "background", "max_iterations": 200},
     })
     make_ctx()
 
@@ -131,8 +117,7 @@ def test_high_or_unset_max_iterations_warns_once(plugin, make_ctx, tmp_path, mon
 @requires_hermes
 def test_ungoverned_or_child_does_not_consume_notice(plugin, make_ctx, tmp_path, monkeypatch):
     _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"interim_assistant_messages": True},
-        "delegation": {},
+        "delegation": {"gateway_mode": "background"},
     })
     make_ctx()
 
@@ -188,8 +173,7 @@ def test_hermes_modules_unavailable_degrades_gracefully(plugin, make_ctx, monkey
 def test_missing_yield_calls_reported(plugin, make_ctx, tmp_path, monkeypatch):
     import sys
     _write_hermes_config(tmp_path, monkeypatch, {
-        "display": {"interim_assistant_messages": True},
-        "delegation": {"max_iterations": 90},
+        "delegation": {"gateway_mode": "background", "max_iterations": 90},
     })
     monkeypatch.setitem(sys.modules, "tools.interrupt", None)
     make_ctx()
@@ -200,7 +184,7 @@ def test_missing_yield_calls_reported(plugin, make_ctx, tmp_path, monkeypatch):
 @requires_hermes
 @pytest.mark.parametrize("value, warned", [(False, True), ("no", True), (True, False), ("true", False), (None, False)])
 def test_rotating_compaction_is_reported(plugin, make_ctx, tmp_path, monkeypatch, value, warned):
-    data = {"display": {"interim_assistant_messages": True}, "delegation": {"max_iterations": 90}}
+    data = {"delegation": {"gateway_mode": "background", "max_iterations": 90}}
     if value is not None:
         data["compression"] = {"in_place": value}
     _write_hermes_config(tmp_path, monkeypatch, data)

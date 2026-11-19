@@ -272,7 +272,7 @@ def test_startup_preflight_warns_once_and_stays_silent_when_healthy(tmp_path, mo
 
     r1 = _start_turn("t1")
     text1 = "\n".join(str(r.get("context", "")) for r in r1 if isinstance(r, dict))
-    assert "weixin" in text1 and "inline" in text1
+    assert "delegation.gateway_mode is auto (the default)" in text1
     assert "delegation.max_iterations is 200" in text1
     assert "compression.in_place is false" in text1
 
@@ -399,23 +399,17 @@ def test_a_rotating_compaction_keeps_the_turn_and_the_result_follows_the_chat(he
         db.close()
 
 
-@pytest.mark.parametrize("gateway_mode", ["auto", "background"])
-def test_inline_delegation_check_covers_every_hermes_platform(plugin, make_ctx, tmp_path, gateway_mode):
-    # Under gateway_mode auto, Hermes joins a delegation inside the turn on a chat whose interim assistant
-    # messages are off: the low and minimal display tiers, and Mattermost unless it opts in (gateway/run_turn.py).
+def test_background_gateway_modes_match_hermes_on_every_platform(plugin):
+    # The startup check asks only for gateway_mode. Its "background" modes must keep every platform Hermes
+    # registers out of the turn whatever the display settings, and the default "auto" must not.
     from gateway.platform_registry import platform_registry
+    from tools.delegate_tool_config import gateway_delegation_inline
 
-    home = tmp_path / "hermes_home"
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text(yaml.safe_dump({"delegation": {"gateway_mode": gateway_mode}}), encoding="utf-8")
     plugins_mod.discover_plugins(force=True)
-    entries = {e.name: str(getattr(e, "display_tier", "") or "").lower() for e in platform_registry.all_entries()}
-    assert {"weixin", "telegram", "feishu", "mattermost"} <= set(entries)
-    make_ctx(config={"governed_platforms": sorted(entries)})
-
-    issues = plugin.preflight.check_host()
-    flagged = {name for name in entries if any(f"Governed platform '{name}' resolves" in i for i in issues)}
-    expected = {name for name, tier in entries.items() if tier in ("low", "minimal") or name == "mattermost"}
-    assert flagged == (expected if gateway_mode == "auto" else set())
-    if gateway_mode == "auto":
-        assert {"weixin", "wecom", "dingtalk"} <= flagged and not {"telegram", "feishu", "discord", "slack"} & flagged
+    names = {e.name for e in platform_registry.all_entries()}
+    assert {"weixin", "telegram", "feishu"} <= names
+    for name in names:
+        for mode in plugin.preflight._BACKGROUND_MODES:
+            cfg = {"delegation": {"gateway_mode": mode}}
+            assert not gateway_delegation_inline(cfg, name, interim_enabled=False), (name, mode)
+        assert gateway_delegation_inline({}, name, interim_enabled=False), name

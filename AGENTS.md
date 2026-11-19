@@ -131,8 +131,9 @@ the `hermes-agent` checkout.
   `display.platforms.mattermost.interim_assistant_messages` is set (`gateway/run_turn.py`,
   `require_platform_override_for`). `tools/delegate_tool_config.py::gateway_delegation_inline` joins a delegation
   inside the turn under `gateway_mode: auto` when interim messages are off; `inline`/`background`/`async` override.
-  `preflight._interim_enabled` mirrors this, and `tests/test_hermes_e2e.py` checks it against every registered
-  platform. Checked at `v0.23.1+canary.20261115` and main `8d70b88a`.
+  The plugin does not mirror this: `preflight` asks only for `gateway_mode: background` (or `async`), because
+  interim messages are the user's display choice, and `tests/test_hermes_e2e.py` checks against every registered
+  platform that those modes never join inside the turn. Checked at `v0.23.1+canary.20261115` and main `8d70b88a`.
 - Some tools (by default `process_manage`, `session_search`, `todo_list`, ...; `tools.tool_search.defer`) are offered
   behind the `tool_search` / `tool_call` bridge. Hermes peels the bridge before plugin hooks run
   (`agent/tool_executor.py`), so `pre_tool_call` and the other tool hooks see the underlying tool name. Checked at
