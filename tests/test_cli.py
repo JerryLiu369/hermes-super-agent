@@ -69,3 +69,41 @@ def test_register_without_cli_support(plugin):
         def register_middleware(self, kind, fn):
             pass
     plugin.register(Bare())
+
+
+def _gateway_ledger(plugin, tmp_path, monkeypatch):
+    """A ledger the gateway wrote, with a task it still runs (in a process this one cannot see)."""
+    import sqlite3
+    path = tmp_path / "gateway" / "ledger.db"
+    path.parent.mkdir()
+    plugin.ledger.load(path)
+    plugin.ledger.start("sa-7-live", "s1", "Rebuild the index", "child-7")
+    plugin.ledger._update("sa-7-live", lambda t: t.update(pid=0, proc=""))
+    plugin.ledger._db.close()
+    plugin.ledger._db = None
+    plugin._reset_all()
+    monkeypatch.setattr(plugin.ledger, "_default_path", lambda: path)
+    monkeypatch.setattr(plugin.ledger, "_open_default", lambda: sqlite3.connect(str(path)))
+    return path
+
+
+def test_status_reads_the_ledger_without_changing_it(plugin, make_ctx, capsys, tmp_path, monkeypatch):
+    path = _gateway_ledger(plugin, tmp_path, monkeypatch)
+    before = path.read_bytes()
+    ctx = make_ctx()
+    assert _run(ctx, "status") == 0
+    out = capsys.readouterr().out
+    assert str(path) in out and "running" in out and "Rebuild the index" in out
+    assert path.read_bytes() == before, "nothing is marked lost, expired or created"
+    assert plugin.ledger.get("sa-7-live")["status"] == "running"
+
+
+def test_status_before_any_ledger_exists(plugin, make_ctx, capsys, tmp_path, monkeypatch):
+    plugin.ledger._db.close()
+    plugin.ledger._db = None
+    missing = tmp_path / "none" / "ledger.db"
+    monkeypatch.setattr(plugin.ledger, "_default_path", lambda: missing)
+    ctx = make_ctx()
+    assert _run(ctx, "status") == 0
+    assert "not created yet" in capsys.readouterr().out
+    assert not missing.parent.exists()

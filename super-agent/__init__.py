@@ -5,8 +5,8 @@ The main agent stays reachable and decides; delegated subagents do the slow work
 keeps four promises, one module each:
 
 1. The chat stays responsive (secretary): a turn time budget, with a note at the soft limit and
-   editing and execution paused at the hard limit, and long terminal commands moved to the
-   background.
+   editing and execution paused at the hard limit (time spent waiting for the user, such as on an
+   approval, does not count), and long terminal commands moved to the background.
 2. Subagents start informed (handoff): a thin or clashing delegate_task brief is returned once;
    an accepted one carries the user's words, memory, running and unfinished tasks, working rules
    and how to report; and a user message that arrives while subagents run comes with their names,
@@ -29,6 +29,7 @@ are governed; cron runs are never touched.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Optional
 
 from . import cli, config, context, handoff, ledger, preflight, prompt, reports, secretary, workers
@@ -51,6 +52,27 @@ def _main_session(**kw: Any) -> Optional[str]:
     return None
 
 
+_recover_lock = threading.Lock()
+_recovered = False
+
+
+def _recover_once() -> None:
+    """Report the subagents a previous Hermes process left running, once, from the process that runs
+    the governed chats. Not at load: every Hermes process loads plugins, and one that serves no chat
+    (``hermes super-agent status`` on the host of a containerised gateway) cannot see the gateway's
+    process and would take its running tasks for lost."""
+    global _recovered
+    with _recover_lock:
+        if _recovered:
+            return
+        _recovered = True
+        try:
+            reports.recover_lost()
+        except Exception as e:
+            logger.exception("super-agent: task ledger unavailable")
+            preflight.set_ledger_error(str(e) or type(e).__name__)
+
+
 def _guarded(fn):
     """A raising pre_tool_call hook blocks the tool in Hermes; never let a plugin bug do that."""
     def wrapper(*args: Any, **kwargs: Any):
@@ -68,6 +90,7 @@ def _pre_llm_call(**kw: Any) -> Optional[dict]:
     session_id = _main_session(**kw)
     if not session_id:
         return None
+    _recover_once()
     turn_id = str(kw.get("turn_id") or "")
     secretary.on_turn_start(session_id, turn_id, context.platform_for(**kw),
                             kw.get("conversation_history"), kw.get("user_message"))
@@ -110,6 +133,22 @@ def _pre_auxiliary_call(**kw: Any) -> None:
 @_guarded
 def _post_auxiliary_call(**kw: Any) -> None:
     _compression(False, **kw)
+
+
+def _human_wait(started: bool, **kw: Any) -> None:
+    session_id = _main_session(**kw)
+    if session_id:
+        secretary.on_human_wait(session_id, str(kw.get("request_id") or ""), started)
+
+
+@_guarded
+def _on_human_input_request(**kw: Any) -> None:
+    _human_wait(True, **kw)
+
+
+@_guarded
+def _on_human_input_resolved(**kw: Any) -> None:
+    _human_wait(False, **kw)
 
 
 @_guarded
@@ -168,6 +207,8 @@ def _parent_governed(parent_session: str) -> bool:
 
 @_guarded
 def _subagent_start(**kw: Any) -> None:
+    if _parent_governed(str(kw.get("parent_session_id") or "")):
+        _recover_once()
     workers.on_subagent_start(_parent_governed, **kw)
 
 
@@ -206,6 +247,9 @@ def _on_session_clean(session_id: str = "", old_session_id: str = "", **kw: Any)
 
 def _reset_all() -> None:
     """Drop all in-memory state (tests)."""
+    global _recovered
+    with _recover_lock:
+        _recovered = False
     secretary.reset_all()
     handoff.reset_all()
     reports.reset_all()
@@ -220,6 +264,8 @@ _HOOKS = {
     "pre_api_request": _pre_api_request,
     "pre_auxiliary_call": _pre_auxiliary_call,
     "post_auxiliary_call": _post_auxiliary_call,
+    "on_human_input_request": _on_human_input_request,
+    "on_human_input_resolved": _on_human_input_resolved,
     "pre_tool_call": _pre_tool_call,
     "post_tool_call": _post_tool_call,
     "transform_tool_result": _transform_tool_result,
@@ -233,14 +279,8 @@ _HOOKS = {
 
 def register(ctx: Any) -> None:
     config.set_ctx(ctx)
-    ledger_error: Optional[str] = None
     try:
-        reports.recover_lost()
-    except Exception as e:
-        ledger_error = str(e) or type(e).__name__
-        logger.exception("super-agent: task ledger unavailable")
-    try:
-        preflight.stage_startup(ledger_error=ledger_error)
+        preflight.stage_startup()
     except Exception:
         logger.exception("super-agent: startup preflight failed")
     for name, fn in _HOOKS.items():

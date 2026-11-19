@@ -111,9 +111,10 @@ def test_restart_marks_running_tasks_lost_and_tells_the_main_agent(plugin, make_
 
     monkeypatch.setattr(plugin.ledger, "_open_default", lambda: sqlite3.connect(str(path), check_same_thread=False))
     make_ctx()
+    assert plugin.ledger.get("sa-old")["status"] == "running", "loading the plugin alone marks nothing lost"
+    note = start_turn(plugin)["context"]
     assert plugin.ledger.get("sa-old")["status"] == "lost"
     assert plugin.ledger.get("sa-live")["status"] == "running", "this process's own tasks are never marked lost"
-    note = start_turn(plugin)["context"]
     assert "Hermes restarted" in note and "Migrate the database" in note and "/srv/db/schema.sql" in note
 
     res = main_tool(plugin, "delegate_task", {"tasks": [{"goal": "Retry", "context": GOOD_CONTEXT}]})
@@ -144,7 +145,7 @@ def test_new_session_cleans_the_old_one_and_keeps_the_ledger(plugin, make_ctx):
 
 
 def test_restart_note_waits_in_the_ledger_for_the_chat(plugin, make_ctx, tmp_path, monkeypatch):
-    """A CLI process (or a second restart) that marks the task lost must not swallow the note."""
+    """Marking the task lost (in another chat's turn, before a second restart) must not swallow the note."""
     path = tmp_path / "shared.db"
     plugin.ledger.load(path)
     plugin.ledger.start("sa-old", "s1", "Rotate the TLS certificate", "child-old")
@@ -153,9 +154,11 @@ def test_restart_note_waits_in_the_ledger_for_the_chat(plugin, make_ctx, tmp_pat
     db.commit()
     db.close()
     monkeypatch.setattr(plugin.ledger, "_open_default", lambda: sqlite3.connect(str(path), check_same_thread=False))
-    make_ctx()  # the first process to load marks the task lost and queues the note
+    make_ctx()
+    start_turn(plugin, session="s2")  # the first governed turn marks the task lost and queues the note
+    assert plugin.ledger.get("sa-old")["status"] == "lost"
     plugin._reset_all()
-    make_ctx()  # the gateway loads later: nothing left to mark, the note is still waiting
+    make_ctx()  # a restart before that chat's next turn: nothing left to mark, the note is still waiting
     note = start_turn(plugin)["context"]
     assert "Hermes restarted" in note and "Rotate the TLS certificate" in note
     end_turn(plugin)

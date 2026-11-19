@@ -307,3 +307,34 @@ def test_status_command_through_hermes_cli_parser(hermes, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["ledger"].endswith(os.path.join("plugin-data", "super-agent", "ledger.db"))
     assert out["settings"]["handoff_min_context_chars"]["value"] == 40, "settings come from Hermes' config"
+
+
+def _plugin_module(manager, name):
+    """A submodule of the plugin as loaded now (earlier loads leave stale copies in sys.modules)."""
+    hook = next(fn for fn in manager._hooks["on_human_input_request"]
+                if fn.__name__ == "_on_human_input_request")
+    return hook.__globals__[name]
+
+
+def test_waiting_for_the_user_pauses_the_turn_clock_through_hermes(hermes, monkeypatch):
+    """Hermes' own human-input wait (approval, clarify, sudo) fires the hooks with the chat's session."""
+    from tools.human_input_hooks import human_input_request
+
+    monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_ID", SESSION)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "weixin")
+    _start_turn()
+    secretary = _plugin_module(hermes, "secretary")
+    with human_input_request("approval", prompt="systemctl restart nginx") as human:
+        assert secretary._turns[SESSION]["waiting"], "the wait reached the plugin for this chat"
+        human.outcome = "once"
+    assert not secretary._turns[SESSION]["waiting"]
+
+
+def test_real_write_file_reports_the_absolute_path(hermes, tmp_path):
+    from tools.file_tools import write_file_tool
+
+    target = tmp_path / "app" / "wrangler.toml"
+    target.parent.mkdir()
+    out = write_file_tool(str(target), "name = 'app'\n", task_id="e2e-write")
+    assert _plugin_module(hermes, "workers").written_paths({"path": str(target)}, out) == [str(target)], out

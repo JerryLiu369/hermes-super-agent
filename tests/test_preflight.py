@@ -47,9 +47,8 @@ def test_memory_fallback_reported_once(plugin, make_ctx, tmp_path, monkeypatch):
     })
     monkeypatch.setattr(plugin.ledger, "_open_default", lambda: sqlite3.connect(":memory:", check_same_thread=False))
     make_ctx()
-    assert plugin.ledger.is_memory_fallback() is True
-
     first = start_turn(plugin, turn="t1")
+    assert plugin.ledger.is_memory_fallback() is True
     assert first and ":memory:" in first["context"]
     assert start_turn(plugin, turn="t2") is None, "startup notice must be injected only once"
 

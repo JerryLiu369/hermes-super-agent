@@ -70,13 +70,16 @@ def record_dispatch(result: Any) -> None:
 
 
 _FENCE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
-_DECISION_WORD = re.compile(r"\bneeds_decision\b")
+# needs_decision given as the status in prose ("Status: needs_decision", or the word opening a line), not
+# the word merely mentioned ("checked the needs_decision path").
+_DECISION_WORD = re.compile(r"(?im)^[\W_]*needs_decision\b|\bstatus\W{1,8}needs_decision\b")
 
 
 def _report(summary: Any) -> dict:
     """The worker's report: its answer when that is a JSON object with a status or a summary, else the
-    last fenced JSON block in it. Prose that names needs_decision still counts as one, without a question
-    (the main agent reads the summary). Other prose that merely quotes some JSON is not a report."""
+    last fenced JSON block in it. Prose that gives needs_decision as its status still counts as one,
+    without a question (the main agent reads the summary). Other prose that merely quotes some JSON is
+    not a report."""
     text = summary if isinstance(summary, str) else ""
     candidates = [summary] + [m for m in reversed(_FENCE.findall(text))]
     for candidate in candidates:
@@ -132,9 +135,7 @@ def _written_paths(history: Any) -> List[str]:
         if not isinstance(item, dict) or item.get("status") == "error" or not workers.is_write(str(item.get("tool_name"))):
             continue
         tool_input = item.get("tool_input")
-        targets = tool_input.get("targets") if isinstance(tool_input, dict) else None
-        value = targets.get("path") if isinstance(targets, dict) else None
-        paths.extend(v for v in (value if isinstance(value, list) else [value]) if isinstance(v, str))
+        paths.extend(workers.written_paths(tool_input.get("targets") if isinstance(tool_input, dict) else None))
     return paths
 
 
@@ -184,7 +185,8 @@ def on_subagent_stop(**kw: Any) -> None:
     w = workers.finish(child_session)
     report = _report(kw.get("child_summary"))
     outcome = _outcome(report, kw.get("child_status"))
-    if not report and outcome == "completed":
+    if outcome == "completed" and not str(report.get("status") or "").strip():
+        # No report, or one without the status it was asked for: only Hermes says "completed".
         outcome = NO_REPORT
     summary = str(report.get("summary") or kw.get("child_summary") or "")
     evidence, blockers = _strings(report.get("evidence")), _strings(report.get("blockers"))

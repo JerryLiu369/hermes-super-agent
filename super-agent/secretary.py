@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -13,15 +14,18 @@ from . import config, context, handoff, util
 
 logger = logging.getLogger("hermes.plugins.super_agent")
 
-# Still available once the turn budget is spent: reading (files and images), delegating and wrapping up
-# (memory, skills, the todo list, a question to the user). Names are Hermes' registered tool names.
+# Still available once the turn budget is spent: reading (files, images and the web), delegating and
+# wrapping up (memory, skills, the todo list, a question to the user). Names are Hermes' registered tool
+# names; a tool not listed (MCP tools included) cannot be told apart from one that changes things.
 RED_ALLOWED_TOOLS = {
-    "delegate_task", "process_manage", "read_file", "search_files", "session_search", "vision_analyze", "memory",
-    "skill_view", "skills_list", "skill_manage", "todo_list", "clarify",
+    "delegate_task", "process_manage", "read_file", "search_files", "session_search", "vision_analyze",
+    "web_search", "web_extract", "memory", "skill_view", "skills_list", "skill_manage", "todo_list", "clarify",
 }
 # process_manage stays only for looking at background jobs or ending them, not for driving them.
 RED_PROCESS_ACTIONS = {"list", "poll", "log", "kill"}
 _KEEP_USER_MESSAGES = 6
+# A compression that never reports its end stops pausing the turn clock after this long.
+_MAX_COMPRESSION_S = 300.0
 # How Hermes marks a user message that arrived mid-turn: a steer row, or (busy_input_mode
 # "interrupt" while the model is answering) a redirect row whose api_content carries this scaffold.
 _STEER_MARKER = "[OUT-OF-BAND USER MESSAGE"
@@ -38,7 +42,7 @@ _local_turns = itertools.count(1)
 def _new_turn(turn_id: str, seen: int = 0, session_key: str = "") -> dict:
     return {"turn_id": turn_id, "key": turn_id or f"local-{next(_local_turns)}", "start": time.monotonic(),
             "seen": seen, "interjections": 0, "noted": "green", "session_key": session_key,
-            "compressing": 0, "compress_since": 0.0}
+            "compressing": 0, "waiting": set(), "paused_since": 0.0}
 
 
 def _turn(session_id: str, turn_id: str = "") -> dict:
@@ -84,11 +88,34 @@ def user_words(session_id: str) -> List[str]:
         return list(_user_words.get(session_id) or [])
 
 
+def _paused(st: dict) -> bool:
+    return bool(st["compressing"] or st["waiting"])
+
+
+def _pause(st: dict, change) -> None:
+    """Apply *change* to the turn's pauses, keeping the clock stopped while any is open. A finished
+    pause is taken off by moving ``start`` forward."""
+    was = _paused(st)
+    now = time.monotonic()
+    length = _pause_length(st, now) if was else 0.0
+    change(st)
+    if _paused(st) and not was:
+        st["paused_since"] = now
+    elif was and not _paused(st):
+        st["start"] += length
+
+
+def _pause_length(st: dict, now: float) -> float:
+    length = now - st["paused_since"]
+    # A wait for the user lasts as long as the user takes; a compression should end on its own.
+    return length if st["waiting"] else min(length, _MAX_COMPRESSION_S)
+
+
 def _elapsed(st: dict) -> float:
-    """Seconds the turn has run, not counting context compression in progress (finished
-    compression is already taken off by moving ``start`` forward)."""
-    now = st["compress_since"] if st["compressing"] else time.monotonic()
-    return max(0.0, now - st["start"])
+    """Seconds the turn has run, not counting context compression or a wait for the user in progress."""
+    now = time.monotonic()
+    paused = _pause_length(st, now) if _paused(st) else 0.0
+    return max(0.0, now - st["start"] - paused)
 
 
 def zone(session_id: str) -> str:
@@ -145,25 +172,36 @@ def on_api_request(session_id: str, turn_id: str, messages: Any) -> None:
         _user_words[session_id] = (_user_words.get(session_id, []) + new)[-_KEEP_USER_MESSAGES:]
         now = time.monotonic()
         st.update(seen=len(found), interjections=st["interjections"] + len(new), start=now, noted="green")
-        if st["compressing"]:
-            st["compress_since"] = now
+        if _paused(st):
+            st["paused_since"] = now
 
 
 def on_compression(session_id: str, turn_id: str, started: bool) -> None:
     """Context compression is Hermes' own work, not the agent's, so its time is kept off the turn
     budget. Calls are counted because a chunked summary may run several at once."""
+    def change(st: dict) -> None:
+        st["compressing"] = st["compressing"] + 1 if started else max(0, st["compressing"] - 1)
     with _lock:
         st = _turns.get(session_id)
         if st is None or not turn_id or st["turn_id"] != turn_id:
             return
+        _pause(st, change)
+
+
+def on_human_wait(session_id: str, request_id: str, started: bool) -> None:
+    """An approval, a clarify question or a password prompt waits for the user; that is the user's
+    time, not the agent's, so it is kept off the turn budget. Hermes pairs the two hooks by request id
+    and carries no turn id, so the wait belongs to the chat's running turn."""
+    def change(st: dict) -> None:
         if started:
-            if not st["compressing"]:
-                st["compress_since"] = time.monotonic()
-            st["compressing"] += 1
-        elif st["compressing"]:
-            st["compressing"] -= 1
-            if not st["compressing"]:
-                st["start"] += time.monotonic() - st["compress_since"]
+            st["waiting"].add(request_id)
+        else:
+            st["waiting"].discard(request_id)
+    with _lock:
+        st = _turns.get(session_id)
+        if st is None:
+            return
+        _pause(st, change)
 
 
 def pre_tool_call(session_id: str, turn_id: str, tool_name: str, args: Optional[dict]) -> Optional[dict]:
@@ -248,8 +286,17 @@ def _yield_api() -> Optional[tuple]:
     return request_yield, consume_yield
 
 
+# Hermes sets this in the plugin-host process (plugins.isolation: host). The tool thread waiting on a
+# command is in the Hermes process, out of reach of the host's own copy of tools.interrupt.
+_HOST_PROCESS_ENV = "HERMES_PLUGIN_HOST_PROCESS"
+
+
+def in_plugin_host() -> bool:
+    return os.environ.get(_HOST_PROCESS_ENV) == "1"
+
+
 def detach_available() -> bool:
-    return _yield_api() is not None
+    return not in_plugin_host() and _yield_api() is not None
 
 
 def arm_detach(args: Optional[dict]) -> Optional[Callable[[], None]]:
@@ -259,7 +306,7 @@ def arm_detach(args: Optional[dict]) -> Optional[Callable[[], None]]:
     mid-turn user message takes): the process keeps running in the background. Returns the
     function to call once the command has returned."""
     detach = float(config.get("terminal_auto_detach_seconds"))
-    if detach <= 0 or (args or {}).get("background"):
+    if detach <= 0 or (args or {}).get("background") or in_plugin_host():
         return None
     api = _yield_api()
     if api is None:

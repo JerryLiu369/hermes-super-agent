@@ -148,7 +148,7 @@ def test_context_compression_is_kept_off_the_turn_budget(plugin, make_ctx):
     _aux(plugin, "_pre_auxiliary_call")
     # 50s of work, then a summary call that took 100s
     plugin.secretary._turns["s1"]["start"] -= 150
-    plugin.secretary._turns["s1"]["compress_since"] -= 100
+    plugin.secretary._turns["s1"]["paused_since"] -= 100
     assert main_tool(plugin, "terminal", {"command": "ls"}) is None, "compressing now does not count"
     _aux(plugin, "_post_auxiliary_call")
     assert plugin.secretary.zone("s1") == "green"
@@ -163,8 +163,58 @@ def test_other_auxiliary_calls_and_turns_keep_the_clock(plugin, make_ctx):
     plugin.secretary._turns["s1"]["start"] -= 130
     for kw in ({"task": "vision"}, {"turn": "review-1"}, {"platform": "subagent"}):
         _aux(plugin, "_pre_auxiliary_call", **kw)
-        plugin.secretary._turns["s1"]["compress_since"] -= 100
+        plugin.secretary._turns["s1"]["paused_since"] -= 100
         _aux(plugin, "_post_auxiliary_call", **kw)
         assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block", kw
     _aux(plugin, "_post_auxiliary_call")  # an unmatched end changes nothing
     assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block"
+
+
+def _human(plugin, hook, request="req-1", session="s1", kind="approval", **extra):
+    # Hermes' payload (tools/human_input_hooks.py): no turn id; the resolved call adds the outcome.
+    getattr(plugin, hook)(kind=kind, request_id=request, session_id=session, session_key="agent:main:weixin:dm:u1",
+                          platform="weixin", prompt="rm -rf build", **extra)
+
+
+def _passes(plugin, seconds):
+    """Let *seconds* go by in the running turn."""
+    st = plugin.secretary._turns["s1"]
+    st["start"] -= seconds
+    if st["paused_since"]:
+        st["paused_since"] -= seconds
+
+
+def test_waiting_for_the_user_is_kept_off_the_turn_budget(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    plugin.secretary._turns["s1"]["start"] -= 50
+    _human(plugin, "_on_human_input_request")
+    _passes(plugin, 90)  # the user takes 90s to approve
+    assert plugin.secretary.zone("s1") == "green"
+    _human(plugin, "_on_human_input_resolved", outcome="once")
+    assert main_tool(plugin, "patch", {"path": "/x"}) is None, "only the agent's own 50s count"
+
+    _human(plugin, "_on_human_input_request", request="req-2", kind="clarify")
+    _human(plugin, "_on_human_input_request", request="other", session="s2")
+    _passes(plugin, 600)
+    _human(plugin, "_on_human_input_resolved", request="req-2", kind="clarify", outcome="answered")
+    assert plugin.secretary.zone("s1") == "green"
+    plugin.secretary._turns["s1"]["start"] -= 75
+    assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block"
+
+
+def test_a_compression_that_never_ends_stops_pausing_the_clock(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    _aux(plugin, "_pre_auxiliary_call")
+    _passes(plugin, 3600)
+    assert main_tool(plugin, "patch", {"path": "/x"})["action"] == "block"
+
+
+def test_red_zone_allows_reading_the_web(plugin, make_ctx):
+    make_ctx()
+    start_turn(plugin)
+    plugin.secretary._turns["s1"]["start"] -= 130
+    for allowed in ("web_search", "web_extract"):
+        assert main_tool(plugin, allowed, {"query": "x"}) is None, allowed
+

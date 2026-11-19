@@ -112,3 +112,14 @@ def test_detach_off_and_logged_once_when_hermes_moves_the_yield_calls(plugin, ma
         assert "move to the background" not in plugin.prompt.render({"platform": "weixin"})
     assert _Timer.made == []
     assert sum("background detach disabled" in r.message for r in caplog.records) <= 1
+
+
+def test_no_detach_in_the_plugin_host_process(plugin, make_ctx, interrupt, monkeypatch):
+    """Under plugins.isolation: host the tool thread is in another process; a yield from here reaches nothing."""
+    monkeypatch.setenv("HERMES_PLUGIN_HOST_PROCESS", "1")
+    ctx = make_ctx()
+    note = start_turn(plugin)["context"]
+    assert _run(ctx) == '{"output": "done"}'
+    assert _Timer.made == [] and plugin.secretary.detach_available() is False
+    assert "move to the background" not in plugin.prompt.render({"platform": "weixin"})
+    assert "plugins.isolation: host" in note and "Background detach is unavailable" not in note
